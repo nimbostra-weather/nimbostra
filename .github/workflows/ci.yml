@@ -1,0 +1,21 @@
+name: CI                          # nom affiché dans l'onglet Actions
+
+on:
+  pull_request:                   # à chaque PR (ouverture, nouveaux commits)
+  push:
+    branches: [main]              # et à chaque fusion sur main
+
+permissions:
+  contents: read                  # droits minimaux du robot
+
+jobs:
+  test:                           # ce nom devient le « check » exigé par le ruleset
+    runs-on: ubuntu-latest        # machine virtuelle fournie par GitHub
+    steps:
+      - uses: actions/checkout@v4          # récupère le code
+      - uses: actions/setup-python@v5      # installe Python
+        with:
+          python-version: "3.12"
+      - run: pip install ruff pytest
+      - run: ruff check .                  # vérifie le style et les erreurs courantes
+      - run: pytest                        # lance les tests
