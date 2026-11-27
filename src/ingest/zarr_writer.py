@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import zarr
 
-from ingest.meteofrance_wcs import BBox, CoverageRequest, RawStore
+from ingest.meteofrance_wcs import BBox, CoverageRequest, RawStore, Variable
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,10 @@ class DecodedField:
 
 
 Decoder = Callable[[bytes], DecodedField]
+# Applied to a whole variable before it is written: (variable, data, steps) -> data.
+# ``data`` is (member, time, [level,] lat, lon) and ``steps`` the lead times in seconds.
+Transform = Callable[[Variable, np.ndarray, list[int]], np.ndarray]
+STATIC_CHUNK = 128
 
 
 def decode_grib_eccodes(data: bytes) -> DecodedField:
@@ -153,14 +157,24 @@ def write_run(
     decoder: Decoder = decode_grib_eccodes,
     bbox: BBox | None = None,
     attrs: dict | None = None,
+    transform: Transform | None = None,
+    static: Iterable[CoverageRequest] = (),
+    var_attrs: dict[str, dict] | None = None,
 ) -> WriteReport:
     """Build the run's Zarr from staged GRIBs and publish it atomically.
 
     Missing fields (404 or never fetched) become NaN. Memory peak is one
     variable at a time: members x steps x (levels) x lat x lon float32.
+
+    ``transform`` post-processes each variable (e.g. accumulations to amounts
+    per step). ``static`` requests (e.g. orography) are written as 2D (lat, lon)
+    arrays of the ``surface`` group, on the same grid; they do not add members
+    or lead times. ``var_attrs`` adds attributes per variable name (e.g. units).
     """
     out_path = Path(out_path)
     plan = list(plan)
+    static = list(static)
+    var_attrs = var_attrs or {}
     if not plan:
         raise ValueError("empty plan")
     members = sorted({r.member for r in plan})
@@ -220,6 +234,8 @@ def write_run(
             if data is None:
                 logger.warning("%s: no field at all, variable skipped", name)
                 continue
+            if transform is not None:
+                data = transform(var, data, steps)
             group = groups.get(var.group)
             if group is None:
                 group = groups[var.group] = _create_group(
@@ -240,8 +256,38 @@ def write_run(
                 dimension_names=dims,
             )
             arr[...] = data
-            arr.attrs.update({"indicator": var.indicator})
+            arr.attrs.update({"indicator": var.indicator, **var_attrs.get(name, {})})
             del data
+        for r in static:
+            raw = store.read(r)
+            if raw is None:
+                logger.warning("%s: static field missing", r.key)
+                n_missing += 1
+                continue
+            f = crop(decoder(raw), bbox)
+            grid = grids.get("surface")
+            if grid is None:
+                grid = grids["surface"] = _Grid(f.lats, f.lons)
+            grid.check(f, r.key)
+            group = groups.get("surface")
+            if group is None:
+                group = groups["surface"] = _create_group(root, "surface", members, steps, grid, [])
+            values = f.values.astype(np.float32)
+            if transform is not None:
+                values = transform(r.variable, values[None, None], [r.step_seconds])[0, 0]
+            arr = group.create_array(
+                r.variable.name,
+                shape=values.shape,
+                dtype="float32",
+                chunks=(min(STATIC_CHUNK, values.shape[0]), min(STATIC_CHUNK, values.shape[1])),
+                fill_value=np.nan,
+                dimension_names=["lat", "lon"],
+            )
+            arr[...] = values
+            arr.attrs.update(
+                {"indicator": r.variable.indicator, **var_attrs.get(r.variable.name, {})}
+            )
+            n_fields += 1
         with warnings.catch_warnings():
             # Consolidated metadata is a zarr-python extension in format 3; xarray uses it.
             warnings.filterwarnings("ignore", message="Consolidated metadata")
