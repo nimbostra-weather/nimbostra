@@ -18,6 +18,7 @@ Caddy. Front en JS vanilla (ES6, sans bundler). Serveur Debian 13.
   (member,time,lat,lon) et `pressure` (member,time,level,lat,lon).
   Grille native conservée, interpolation au point à la lecture.
   Chunks : ensembles tous membres+toutes échéances sur ~8x8 points.
+  AROME déterministe : chunks 1 membre × toutes échéances × 32x32 points, zstd.
 - Cumuls convertis en « par pas » et unités normalisées à l'ingestion.
 - Correction d'altitude à la lecture (MNT vs orographie du modèle).
 - Clusters : à la demande, par point, avec cache ; distance sur
