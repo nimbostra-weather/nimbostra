@@ -60,8 +60,9 @@ Une variable facultative introuvable est ignorée et notée dans l'attribut
 
 Source : `constant-eurw1s40.grib2`, fichier Météo-France des champs
 constants de la grille EURW1S40 (0,025°, 1121 × 717 points, 37,5–55,4 N,
-12 W–16 E), fourni par Lionel le 2026-11-27. Licence Ouverte Etalab 2.0,
-mention « Météo-France ».
+12 W–16 E), publié dans la documentation de l'API sur le Confluence
+de Météo-France et fourni par Lionel le 2026-11-27. Licence Ouverte
+Etalab 2.0, mention « Météo-France ».
 
 - Deux messages : `h` (hauteur géométrique, m) et `lsm` (masque
   terre-mer, fraction, stocké en %).
@@ -71,10 +72,10 @@ mention « Météo-France ».
 - Valeurs vérifiées : 4 119 m au plus haut (massif du Mont-Blanc),
   48 m à Paris, 0 en mer, -133 m au plus bas, vers 50,9 N 6,5 E, ce qui
   correspond aux mines de lignite à ciel ouvert de Rhénanie.
-- **À confirmer** : un relief aussi fin (4 119 m) ressemble davantage au
-  relief commun des produits 0,025° qu'au relief lissé d'un modèle à
-  2,5 km. Pour la correction d'altitude, l'écart reste faible devant
-  celui du MNT.
+- C'est le relief de la grille, commun aux produits 0,025° de Météo-France.
+  Il est peut-être un peu plus fin que celui qu'utilise réellement
+  AROME-PE à 2,5 km ; pour la correction d'altitude, l'écart reste faible
+  devant celui du MNT.
 
 Emplacement sur le serveur (jamais dans le dépôt) :
 `$DATA_DIR/static/arome-pe/constant-eurw1s40.grib2`, ou le chemin donné

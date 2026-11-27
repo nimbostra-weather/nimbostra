@@ -827,7 +827,10 @@ CONSTANTS: tuple[ConstantSpec, ...] = (
     ConstantSpec("orog", ("h", "orog"), "m", "model orography (geometrical height)"),
     ConstantSpec("lsm", ("lsm",), "%", "land-sea mask"),
 )
-CONSTANTS_SOURCE = "Météo-France, champs constants de la grille EURW1S40 (0,025°)"
+CONSTANTS_SOURCE = (
+    "Météo-France, champs constants de la grille EURW1S40 (0,025°), documentation de "
+    "l'API (Confluence Météo-France), Licence Ouverte Etalab 2.0"
+)
 
 
 def iter_grib_messages(path: Path):
