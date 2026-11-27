@@ -30,6 +30,15 @@ def dewpoint(t: np.ndarray, rh: np.ndarray) -> np.ndarray:
     return b * gamma / (a - gamma)
 
 
+def relative_humidity(t: np.ndarray, td: np.ndarray) -> np.ndarray:
+    """Relative humidity (%) from temperature and dewpoint, inverse of ``dewpoint``."""
+    a, b = 17.625, 243.04
+    t = np.asarray(t, dtype=float)
+    td = np.asarray(td, dtype=float)
+    rh = 100.0 * np.exp(a * td / (b + td) - a * t / (b + t))
+    return np.clip(rh, 0.0, 100.0)
+
+
 def wet_bulb(t: np.ndarray, rh: np.ndarray) -> np.ndarray:
     """Stull (2011) empirical wet-bulb temperature at ~1013 hPa.
 

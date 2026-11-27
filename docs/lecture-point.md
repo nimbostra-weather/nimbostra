@@ -1,9 +1,10 @@
-# Lecture d'un point (AROME, ARPEGE)
+# Lecture d'un point (AROME, ARPEGE, IFS)
 
 Code : `src/point/reader.py` (lecture et interpolation) et
 `src/point/derived.py` (grandeurs dérivées). Aucune lecture de GRIB :
 seuls les chunks Zarr publiés par `ingest.mf_paquets_convert` sont lus, pour
-AROME (`$DATA_DIR/arome`) comme pour ARPEGE (`$DATA_DIR/arpege`).
+AROME (`$DATA_DIR/arome`) comme pour ARPEGE (`$DATA_DIR/arpege`) et IFS
+(`$DATA_DIR/ifs`).
 
 ## Étapes
 
@@ -29,13 +30,13 @@ AROME (`$DATA_DIR/arome`) comme pour ARPEGE (`$DATA_DIR/arpege`).
 | Nom | Unité | Calcul |
 |-----|-------|--------|
 | temperature | °C | t2m corrigée de l'altitude |
-| humidity | % | r2 |
+| humidity | % | r2 ; IFS : déduite de t2m et d2m (Magnus inversée), avant correction d'altitude |
 | dewpoint | °C | Magnus (Alduchov et Eskridge 1996) |
 | wet_bulb | °C | Stull (2011), précision ~1 °C |
 | wind_speed, wind_direction | m/s, ° | à partir de u10, v10 ; direction d'où vient le vent |
-| wind_gust | m/s | rafale `gust10` si le modèle la fournit (ARPEGE), sinon hypot des composantes (AROME) |
+| wind_gust | m/s | rafale `gust10` si le modèle la fournit (ARPEGE, IFS), sinon hypot des composantes (AROME) |
 | feels_like | °C | refroidissement éolien (JAG/TI) si T ≤ 10 °C, indice de chaleur (Rothfusz) si T ≥ 27 °C et HR ≥ 40 % |
-| precipitation, rain, snow, graupel | mm par pas | AROME : somme des phases du modèle ; ARPEGE : `precip_total`, pluie `tirf` (à défaut total − neige) |
+| precipitation, rain, snow, graupel | mm par pas | AROME : somme des phases du modèle ; ARPEGE : `precip_total`, pluie `tirf` (à défaut total − neige) ; IFS : `precip_total`, neige `sf`, pluie = total − neige |
 | precipitation_type | texte | phase ≥ 80 % du total, sinon `mixed` ; `none` sous 0,1 mm |
 | rain_snow_limit | m | **estimation** : altitude où le thermomètre mouillé atteint 1 °C, extrapolé à 6,5 K/km |
 | cloud_total | % | tcc, si le modèle la fournit |

@@ -1,10 +1,12 @@
-"""Convert one staged API Paquets run (AROME 0.01°, ARPEGE 0.1°) into a published Zarr.
+"""Convert one staged run (API Paquets AROME 0.01°, ARPEGE 0.1°; ECMWF IFS 0.1°) into Zarr.
 
 Input: a complete staging directory written by ``ingest.meteofrance_paquets``
 (``<raw>/<run tag>/<package>/<time>.grib2`` plus ``manifest.json``). Each file
 holds many GRIB messages: one per parameter and lead time (AROME files hold one
-lead time, ARPEGE files a 12 h range). ``PROFILES`` gives, per model, the
-variable table and the packages read only for static fields.
+lead time, ARPEGE files a 12 h range). ``ingest.ecmwf_opendata`` stages ECMWF
+open data runs in the same layout (one ``sfc`` file per lead time).
+``PROFILES`` gives, per model, the variable table, the packages read only for
+static fields and the source attributes of the store.
 
 Output: ``<out>/<run tag>.zarr`` with one group ``surface``:
 - coordinates ``member`` (a single member 0, to share the ensemble layout),
@@ -178,6 +180,43 @@ ARPEGE_VARIABLES: tuple[VarSpec, ...] = (
 )
 
 
+# ECMWF IFS 0.1° open data (``ingest.ecmwf_opendata``), names checked on the
+# real files of 2026-11-27 00z. No 2 m relative humidity: the reader derives it
+# from the dewpoint. ``tp`` is the total precipitation, ``sf`` its snow part.
+# ``10fg`` is the maximum over the last hour up to +144 h (stepRange 23-24 at
+# +24 h), over the 6 h step after (144-150 at +150 h): gusts between two 3-hourly
+# lead times are not seen. The orography is the geopotential ``z`` at +0 h.
+IFS_VARIABLES: tuple[VarSpec, ...] = (
+    VarSpec("t2m", ("2t",), "degC", "instant", "heightAboveGround", 2, "2 m temperature"),
+    VarSpec("d2m", ("2d",), "degC", "instant", "heightAboveGround", 2, "2 m dewpoint"),
+    VarSpec("u10", ("10u",), "m s-1", "instant", "heightAboveGround", 10, "10 m eastward wind"),
+    VarSpec("v10", ("10v",), "m s-1", "instant", "heightAboveGround", 10, "10 m northward wind"),
+    VarSpec(
+        "gust10",
+        ("10fg",),
+        "m s-1",
+        "max",
+        "heightAboveGround",
+        10,
+        "10 m gust speed, max over the last hour (6 h after +144 h), not the whole step",
+    ),
+    VarSpec("precip_total", ("tp",), "mm", "accum", description="total precipitation per step"),
+    VarSpec("snow", ("sf",), "mm", "accum", description="snowfall (water equivalent) per step"),
+    VarSpec("tcc", ("tcc",), "%", description="total cloud cover"),
+    VarSpec("lcc", ("lcc",), "%", description="low cloud cover"),
+    VarSpec("sp", ("sp",), "hPa", type_of_level="surface", description="surface pressure"),
+    VarSpec("mslp", ("msl",), "hPa", description="mean sea level pressure"),
+    VarSpec("orog", ("z",), "m", "static", type_of_level="surface", description="model orography"),
+)
+
+METEOFRANCE_ATTRS = {"source": "Météo-France", "license": "Licence Ouverte Etalab 2.0"}
+ECMWF_ATTRS = {
+    "source": "ECMWF open data (https://www.ecmwf.int)",
+    "license": "CC BY 4.0",
+    "modifications": "cropped to France + ~100 km, accumulations per step, units converted",
+}
+
+
 @dataclass(frozen=True)
 class ConvertProfile:
     """What to read in the staged packages of one model."""
@@ -185,11 +224,13 @@ class ConvertProfile:
     variables: tuple[VarSpec, ...]
     static_packages: frozenset[str] = frozenset()
     required: frozenset[str] = REQUIRED
+    attrs: dict[str, str] = field(default_factory=lambda: dict(METEOFRANCE_ATTRS))
 
 
 PROFILES: dict[str, ConvertProfile] = {
     "arome": ConvertProfile(AROME_VARIABLES, STATIC_PACKAGES),
     "arpege": ConvertProfile(ARPEGE_VARIABLES),
+    "ifs": ConvertProfile(IFS_VARIABLES, attrs=dict(ECMWF_ATTRS)),
 }
 
 
@@ -213,8 +254,9 @@ _CONVERSIONS: dict[tuple[str, str], Callable[[np.ndarray], np.ndarray]] = {
     ("1", "%"): lambda v: v * np.float32(100.0),
     ("Proportion", "%"): lambda v: v * np.float32(100.0),
     ("m2 s-2", "m"): lambda v: v / np.float32(GRAVITY),
-    # Precipitation as a water depth (ECMWF-style ``tp`` in m).
+    # Precipitation as a water depth (ECMWF-style ``tp`` in m, ``sf`` in m of water).
     ("m", "mm"): lambda v: v * np.float32(1000.0),
+    ("m of water equivalent", "mm"): lambda v: v * np.float32(1000.0),
 }
 # Same quantity, same scale: stored as is.
 _SAME_UNITS = {
@@ -470,8 +512,7 @@ def convert_run(
                 "grid": manifest["grid"],
                 "run": format_run(run),
                 "created": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "source": "Météo-France",
-                "license": "Licence Ouverte Etalab 2.0",
+                **METEOFRANCE_ATTRS,
                 **(attrs or {}),
             }
         )
@@ -488,6 +529,9 @@ def convert_run(
             by_step.clear()  # release per-step arrays as we go
             if spec.kind == "accum":
                 data = per_step(data, steps)
+            elif spec.kind == "max" and 0 in t_idx:
+                # A maximum over an empty period: IFS writes 0 at +0 h, store "no value".
+                data[t_idx[0]] = np.nan
             expected = [int(h) for h in steps if not (spec.kind in ("accum", "max") and h == 0)]
             gaps = [h for h in expected if np.isnan(data[t_idx[h]]).all()]
             if gaps:

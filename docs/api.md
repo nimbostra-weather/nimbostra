@@ -8,7 +8,7 @@ uvicorn api.app:app --host 127.0.0.1 --port 8000
 
 `DATA_DIR` (environnement ou `.env`) désigne le dossier des Zarr publiés
 (`$DATA_DIR/<modèle>/latest.json`) ; `NIMBOSTRA_MODELS` la liste des modèles
-servis (`arome,arpege` par défaut). La documentation interactive est servie sur
+servis (`arome,arpege` par défaut, `ifs` pour ECMWF IFS). La documentation interactive est servie sur
 `/v1/docs`, le schéma sur `/v1/openapi.json`. L'API est publique, sans clé
 et, pour l'instant, sans limite de débit (voir `docs/exploitation.md`).
 
@@ -24,7 +24,7 @@ variables stockées avec leur unité. `run` vaut `null` si aucun run n'est publi
 Valeurs stockées interpolées au point, **sans correction** : unités du Zarr
 (°C, %, m/s, mm par pas, hPa). `static.orog` donne l'altitude du modèle au point.
 
-### `GET /v1/forecast/point?lat=&lon=[&alt=][&model=arome|arpege]`
+### `GET /v1/forecast/point?lat=&lon=[&alt=][&model=arome|arpege|ifs]`
 
 Prévision corrigée de l'altitude, avec les grandeurs dérivées décrites dans
 `docs/lecture-point.md`. `alt` (m) l'emporte sur le MNT, puis sur
@@ -49,12 +49,17 @@ l'orographie du modèle ; `elevation.source` dit laquelle a servi.
 }
 ```
 
+- `attribution` : sources et licence du modèle de la réponse. Pour IFS, le
+  texte exigé par l'ECMWF (CC BY 4.0, ©, non-responsabilité, modifications).
+  `/v1/models` donne l'attribution de chaque modèle et, au niveau racine,
+  celles de tous les fournisseurs servis.
 - Colonnes : une liste de valeurs par variable, alignée sur `times` (UTC).
 - `null` = valeur absente (cumuls et rafales à l'échéance 0, champ manquant).
 - Une précipitation à l'instant t est le cumul depuis l'instant précédent qui a
   une valeur. AROME : l'heure qui se termine à t. ARPEGE : horaire jusqu'à
   +48 h puis, pour les paramètres qui passent au pas de 3 h, `null` aux heures
-  intermédiaires et cumul de 3 h à t.
+  intermédiaires et cumul de 3 h à t. IFS : cumul de 3 h jusqu'à +144 h,
+  puis de 6 h.
 
 ## Temps de traitement
 

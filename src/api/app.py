@@ -8,7 +8,9 @@ Routes:
 
 Run with ``uvicorn api.app:app`` from ``src``. Paths come from ``DATA_DIR``
 (environment or ``.env``), the served models from ``NIMBOSTRA_MODELS``
-(comma-separated, default ``arome,arpege``). Endpoints are plain ``def``: FastAPI runs them in its
+(comma-separated, default ``arome,arpege``; add ``ifs`` for ECMWF IFS).
+Every response names its data sources in ``attribution``: the ECMWF CC BY 4.0
+terms require it for IFS. Endpoints are plain ``def``: FastAPI runs them in its
 thread pool, which suits the blocking Zarr reads.
 
 Responses carry ``Cache-Control`` and an ``ETag`` derived from the run and the
@@ -23,7 +25,9 @@ from __future__ import annotations
 import hashlib
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -33,12 +37,22 @@ from fastapi.responses import JSONResponse
 
 from ingest.dem import open_dem
 from ingest.dotenv import load_dotenv
-from ingest.health import DEFAULT_MAX_AGE_HOURS, check_freshness, configured_models
+from ingest.health import check_freshness, configured_models, max_age_for
 from point.reader import ElevationSource, NoRun, OutOfDomain, RunStore, derive, read_raw
 
 API_VERSION = "v1"
 CACHE_SECONDS = 300
-ATTRIBUTION = "Source : Météo-France (Licence Ouverte Etalab 2.0)"
+METEOFRANCE_ATTRIBUTION = "Source : Météo-France (Licence Ouverte Etalab 2.0)"
+# Wording required by the ECMWF open data terms (CC BY 4.0): the English
+# sentence, copyright, source, licence, disclaimer and the changes made.
+ECMWF_ATTRIBUTION = (
+    "This service is based on data and products of the European Centre for "
+    "Medium-Range Weather Forecasts (ECMWF). Source : www.ecmwf.int, © {year} ECMWF, "
+    "licence CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). "
+    "Données recadrées, interpolées au point et converties d'unités par Nimbostra ; "
+    "l'ECMWF n'est pas responsable de leur exactitude ni de leur utilisation."
+)
+ATTRIBUTIONS = {"meteofrance": METEOFRANCE_ATTRIBUTION, "ecmwf": ECMWF_ATTRIBUTION}
 
 Lat = Annotated[float, Query(ge=-90, le=90, description="Latitude en degrés décimaux")]
 Lon = Annotated[float, Query(ge=-180, le=180, description="Longitude en degrés décimaux")]
@@ -50,12 +64,24 @@ class ModelInfo:
     name: str
     label: str
     resolution: str
+    provider: str = "meteofrance"
+
+    def attribution(self, year: int | None = None) -> str:
+        year = year or datetime.now(UTC).year
+        return ATTRIBUTIONS[self.provider].format(year=year)
 
 
 KNOWN_MODELS = {
     "arome": ModelInfo("arome", "AROME (Météo-France)", "0.01°"),
     "arpege": ModelInfo("arpege", "ARPEGE (Météo-France)", "0.1°"),
+    "ifs": ModelInfo("ifs", "IFS (ECMWF)", "0.1°", provider="ecmwf"),
 }
+
+
+def attribution(models: Iterable[str]) -> str:
+    """Attributions of the given models' providers, each once, in model order."""
+    texts = [KNOWN_MODELS[m].attribution() for m in models if m in KNOWN_MODELS]
+    return " | ".join(dict.fromkeys(texts))
 
 
 @dataclass
@@ -159,9 +185,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         Meant for an external uptime monitor; never cached.
         """
-        max_age = float(os.environ.get("ALERT_MAX_AGE_HOURS", DEFAULT_MAX_AGE_HOURS))
         checks = [
-            check_freshness(settings.data_dir / name, name, max_age_hours=max_age)
+            check_freshness(settings.data_dir / name, name, max_age_hours=max_age_for(name))
             for name in settings.models
         ]
         body = {
@@ -184,7 +209,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out, runs = [], []
         for name in settings.models:
             info = KNOWN_MODELS[name]
-            entry: dict = {"name": name, "label": info.label, "resolution": info.resolution}
+            entry: dict = {
+                "name": name,
+                "label": info.label,
+                "resolution": info.resolution,
+                "attribution": info.attribution(),
+            }
             try:
                 run, group = open_latest(name)
             except HTTPException:
@@ -213,7 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             runs.append(entry["run"])
             out.append(entry)
         timer.step("read")
-        body = {"models": out, "attribution": ATTRIBUTION}
+        body = {"models": out, "attribution": attribution(settings.models)}
         return _cached(request, body, _etag("models", *runs), timer)
 
     @app.get("/v1/raw/{model}/point")
@@ -242,6 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         timer.step("read")
         body = data.to_json()
         body["static"] = {k: round(v, 1) for k, v in data.static.items()}
+        body["attribution"] = KNOWN_MODELS[model].attribution(run.year)
         return _cached(request, body, etag, timer)
 
     @app.get("/v1/forecast/point")
@@ -253,7 +284,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             float | None,
             Query(ge=-500, le=5000, description="Altitude du lieu en m (sinon MNT ou modèle)"),
         ] = None,
-        model: Annotated[str, Query(description="Modèle déterministe : arome ou arpege")] = "arome",
+        model: Annotated[
+            str, Query(description="Modèle déterministe : arome, arpege ou ifs")
+        ] = "arome",
     ) -> Response:
         timer = Timer()
         run, group = open_latest(model)
@@ -268,6 +301,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         forecast = derive(raw, elevation=alt, dem=settings.dem)
         timer.step("derive")
         body = forecast.to_json()
+        body["attribution"] = KNOWN_MODELS[model].attribution(run.year)
         return _cached(request, body, etag, timer)
 
     return app
