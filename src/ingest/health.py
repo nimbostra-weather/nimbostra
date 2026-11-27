@@ -4,6 +4,9 @@
 ``NIMBOSTRA_MODELS`` (default ``arome,arpege``) is older than
 ``ALERT_MAX_AGE_HOURS`` (default 12 h: runs every 3 to 6 h, plus the publication
 delay) and, with ``--notify``, sends one alert listing the late models.
+A model published later than that keeps a higher floor (IFS 0.1°: about 9.5 h
+after the run, every 6 h, so up to ~16 h old just before the next one);
+``ALERT_MAX_AGE_HOURS_<MODEL>`` (e.g. ``ALERT_MAX_AGE_HOURS_IFS``) overrides both.
 ``python -m ingest.health alert "<text>"`` only sends an alert (used by the
 systemd ``OnFailure=`` unit).
 
@@ -32,6 +35,18 @@ logger = logging.getLogger("ingest.health")
 
 DEFAULT_MAX_AGE_HOURS = 12.0
 DEFAULT_MODELS = ("arome", "arpege")
+# Lowest threshold that does not raise false alerts for slowly published models.
+MIN_MAX_AGE_HOURS = {"ifs": 18.0}
+
+
+def max_age_for(model: str, env: dict[str, str] | None = None) -> float:
+    """Alert threshold of ``model``: its own variable, else max(global, model floor)."""
+    env = os.environ if env is None else env
+    specific = env.get(f"ALERT_MAX_AGE_HOURS_{model.upper()}")
+    if specific:
+        return float(specific)
+    base = float(env.get("ALERT_MAX_AGE_HOURS") or DEFAULT_MAX_AGE_HOURS)
+    return max(base, MIN_MAX_AGE_HOURS.get(model, 0.0))
 
 
 def configured_models(env: dict[str, str] | None = None) -> tuple[str, ...]:
@@ -127,9 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         send_alert(f"[{host}] {args.text or 'échec sans détail'}", url)
         return 0
 
-    max_age = float(os.environ.get("ALERT_MAX_AGE_HOURS", DEFAULT_MAX_AGE_HOURS))
     checks = [
-        check_freshness(args.data / m, m, max_age_hours=max_age)
+        check_freshness(args.data / m, m, max_age_hours=max_age_for(m))
         for m in (args.model or configured_models())
     ]
     for f in checks:

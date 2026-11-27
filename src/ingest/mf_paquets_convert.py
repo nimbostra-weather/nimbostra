@@ -1,10 +1,11 @@
-"""Command line entry point: convert the latest staged API Paquets run into Zarr.
+"""Command line entry point: convert the latest staged run (API Paquets or ECMWF) into Zarr.
 
 Usage (from ``src``):
   python -m ingest.mf_paquets_convert inventory        # list GRIB keys of the latest staged run
   python -m ingest.mf_paquets_convert convert          # convert it if not done yet
   python -m ingest.mf_paquets_convert convert --keep 2 # then keep the 2 latest stores
   python -m ingest.mf_paquets_convert convert --model arpege
+  python -m ingest.mf_paquets_convert convert --model ifs   # staged by ingest.ecmwf_fetch
 
 Paths: ``$RAW_DIR/<model>`` (staged GRIB) and ``$DATA_DIR/<model>`` (Zarr stores).
 ``--constants`` (or ``<MODEL>_CONSTANTS``, e.g. ``ARPEGE_CONSTANTS``) names an
@@ -111,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             static_packages=profile.static_packages,
             required=profile.required,
             constants=constants,
+            attrs=profile.attrs,
         )
     except (ValueError, OSError) as exc:
         logger.error("%s: %s", format_run(run), exc)

@@ -270,6 +270,10 @@ def derive(
     if t is not None:
         put("temperature", t, "degC")
     rh = s.get("r2")
+    if rh is None and "d2m" in s and "t2m" in s:
+        # IFS has no 2 m humidity: from the model dewpoint and temperature, before
+        # the altitude correction (the air mass is the same, only T is shifted).
+        rh = derived.relative_humidity(s["t2m"], s["d2m"])
     if rh is not None:
         put("humidity", rh, "%")
     if t is not None and rh is not None:
