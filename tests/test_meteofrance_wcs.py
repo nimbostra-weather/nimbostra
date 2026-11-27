@@ -370,3 +370,21 @@ def test_download_stops_on_auth_error(tmp_path):
     assert not report.ok
     assert report.http_calls < 10
     assert report.fetched == 0
+
+
+def test_429_log_shows_rate_limit_headers_and_body(caplog):
+    responses = iter(
+        [
+            httpx.Response(
+                429,
+                headers={"X-RateLimit-Remaining": "0", "Content-Type": "application/json"},
+                json={"code": "900800", "message": "Message throttled out"},
+            ),
+            httpx.Response(200, content=GRIB),
+        ]
+    )
+    client, _ = make_client(lambda r: next(responses))
+    with caplog.at_level("WARNING", logger="ingest.meteofrance_wcs"):
+        client.fetch(req())
+    text = caplog.text
+    assert "x-ratelimit-remaining" in text.lower() and "throttled out" in text
