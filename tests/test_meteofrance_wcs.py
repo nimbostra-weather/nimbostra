@@ -354,9 +354,13 @@ def test_download_stages_marks_missing_and_resumes(tmp_path):
     assert all(store.has(r) for r in plan)
     assert not list((tmp_path / "raw").rglob("*.part"))
 
-    again = client.download(plan, store, workers=4)
+    again = client.download(plan, store, workers=4, retry_missing=False)
     assert again.skipped == 6 and again.http_calls == 0
     assert len(calls) == 6
+
+    # By default a 404 is asked again: the field may have been published since.
+    retried = client.download(plan, store, workers=4)
+    assert retried.skipped == 5 and retried.http_calls == 1 and len(retried.missing) == 1
 
 
 def test_download_stops_on_auth_error(tmp_path):

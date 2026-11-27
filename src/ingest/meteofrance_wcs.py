@@ -516,12 +516,17 @@ class WcsClient:
         *,
         workers: int = 4,
         max_auth_errors: int = 1,
+        retry_missing: bool = True,
     ) -> IngestReport:
-        """Fetch every request not already staged. Safe to rerun after a crash."""
+        """Fetch every request not already staged. Safe to rerun after a crash.
+
+        A 404 may only mean "not published yet", so previously missing fields
+        are asked again unless ``retry_missing`` is False.
+        """
         report = IngestReport()
         todo: list[CoverageRequest] = []
         for req in plan:
-            if store.has(req):
+            if store.path(req).exists() or (not retry_missing and store.is_missing(req)):
                 report.skipped += 1
             else:
                 todo.append(req)
