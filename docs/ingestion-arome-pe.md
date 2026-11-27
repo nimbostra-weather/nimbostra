@@ -40,7 +40,11 @@ Une variable facultative introuvable est ignorée et notée dans l'attribut
 | mslp | PRESSURE__MEAN_SEA_LEVEL | hPa | non |
 | orog | GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE (un seul appel, membre 0) | m | non |
 
-- AROME-PE ne fournit que la nébulosité basse (`lcc`).
+- AROME-PE ne fournit que la nébulosité basse (`lcc`), pas la totale (`tcc`).
+  Les clusters utilisent les deux (décision du 2026-11-27) : la basse est
+  importante et mal vue par certains modèles. Pour AROME-PE, `tcc` manque ;
+  la façon de traiter ce manque dans la distance reste à décider à l'étape
+  des clusters.
 - Cumuls : avec l'intervalle PT1H, la valeur est déjà « par pas ». Sans
   intervalle, le cumul depuis le début du run est converti par différence.
   Pas de champ à l'échéance 0 pour les cumuls et les rafales.
