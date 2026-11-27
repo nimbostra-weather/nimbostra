@@ -16,6 +16,6 @@ jobs:
       - uses: actions/setup-python@v5      # installe Python
         with:
           python-version: "3.12"
-      - run: pip install ruff pytest httpx numpy zarr eccodes
+      - run: pip install ruff pytest httpx numpy zarr eccodes fastapi
       - run: ruff check .                  # vérifie le style et les erreurs courantes
       - run: pytest                        # lance les tests
