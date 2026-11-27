@@ -12,7 +12,7 @@ jobs:
   test:                           # ce nom devient le « check » exigé par le ruleset
     runs-on: ubuntu-latest        # machine virtuelle fournie par GitHub
     steps:
-      - uses: actions/checkout@v4          # récupère le code
+      - uses: actions/checkout@v7          # récupère le code
       - uses: actions/setup-python@v5      # installe Python
         with:
           python-version: "3.12"
