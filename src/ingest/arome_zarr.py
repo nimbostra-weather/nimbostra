@@ -1,16 +1,21 @@
-"""Convert one staged AROME 0.01° run (API Paquets GRIB2) into an atomically published Zarr.
+"""Convert one staged API Paquets run (AROME 0.01°, ARPEGE 0.1°) into a published Zarr.
 
 Input: a complete staging directory written by ``ingest.meteofrance_paquets``
-(``<raw>/<run tag>/{SP1,SP2,SP3}/<time>.grib2`` plus ``manifest.json``). Each
-file holds many GRIB messages: one per parameter for one lead time.
+(``<raw>/<run tag>/<package>/<time>.grib2`` plus ``manifest.json``). Each file
+holds many GRIB messages: one per parameter and lead time (AROME files hold one
+lead time, ARPEGE files a 12 h range). ``PROFILES`` gives, per model, the
+variable table and the packages read only for static fields.
 
 Output: ``<out>/<run tag>.zarr`` with one group ``surface``:
 - coordinates ``member`` (a single member 0, to share the ensemble layout),
   ``time`` (seconds since run), ``lat``, ``lon`` (ascending, native 0.01° grid
-  cropped to France + ~100 km);
+  cropped to France + ~100 km); ``time`` is the union of the lead times of all
+  variables, a variable missing at a lead time holds NaN there (ARPEGE: some
+  fields become 3-hourly after +48 h);
 - one array per variable, dims (member, time, lat, lon), chunks of
   1 x all lead times x 32 x 32 points, zstd;
-- ``orog`` (lat, lon): model orography from SP3, for the altitude correction.
+- ``orog`` (lat, lon): model orography (AROME SP3, or an optional constants
+  file), for the altitude correction.
 
 Normalisation at ingestion (see CLAUDE.md): accumulations since run start are
 turned into amounts per step, K -> °C, Pa -> hPa, cloud fractions -> %.
@@ -18,7 +23,8 @@ Units are converted from the GRIB ``units`` key, and an unexpected unit is an
 error rather than a silent mistake.
 
 Memory: the whole run is held in RAM before writing, about 400 MB per variable
-on the cropped grid (52 lead times x ~1150 x 1700 float32), so ~6 GB in total.
+on the cropped AROME grid (52 lead times x ~1150 x 1700 float32), so ~6 GB in
+total; ARPEGE 0.1° needs ~8 MB per variable.
 """
 
 from __future__ import annotations
@@ -48,6 +54,8 @@ SPATIAL_CHUNK = 32
 ZSTD_LEVEL = 3
 GRAVITY = 9.80665
 LATEST = "latest.json"
+# Pseudo package name of the optional constants file in ``convert_run``.
+CONSTANTS_PACKAGE = "constants"
 _STORE = re.compile(r"^(\d{8}T\d{2}Z)\.zarr$")
 
 Kind = Literal["instant", "max", "accum", "static"]
@@ -117,6 +125,73 @@ REQUIRED = frozenset({"t2m", "u10", "v10", "orog"})
 # Packages read only for static fields.
 STATIC_PACKAGES = frozenset({"SP3"})
 
+# ARPEGE 0.1° SP1/SP2, names checked with ``arome_convert inventory --model arpege``
+# on the real run of 2026-11-27 12z. ``tp`` is the total precipitation (all
+# phases), stored as ``precip_total``; ``tirf`` (rain) and ``tsnowp`` (snow) are
+# its phases. The gust speed ``max_i10fg`` is stored next to its components.
+# The packages carry neither total cloud cover nor orography: ``tcc`` is kept in
+# case it appears, the orography comes from ``constant-eurat01.grib2``.
+ARPEGE_VARIABLES: tuple[VarSpec, ...] = (
+    VarSpec("t2m", ("2t",), "degC", "instant", "heightAboveGround", 2, "2 m temperature"),
+    VarSpec("r2", ("2r",), "%", "instant", "heightAboveGround", 2, "2 m relative humidity"),
+    VarSpec("d2m", ("2d",), "degC", "instant", "heightAboveGround", 2, "2 m dewpoint"),
+    VarSpec("u10", ("10u",), "m s-1", "instant", "heightAboveGround", 10, "10 m eastward wind"),
+    VarSpec("v10", ("10v",), "m s-1", "instant", "heightAboveGround", 10, "10 m northward wind"),
+    VarSpec(
+        "gust_u10",
+        ("10efg", "max_10efg"),
+        "m s-1",
+        "max",
+        "heightAboveGround",
+        10,
+        "10 m eastward gust component, max over the past step",
+    ),
+    VarSpec(
+        "gust_v10",
+        ("10nfg", "max_10nfg"),
+        "m s-1",
+        "max",
+        "heightAboveGround",
+        10,
+        "10 m northward gust component, max over the past step",
+    ),
+    VarSpec(
+        "gust10",
+        ("max_i10fg", "i10fg", "10fg", "max_10fg"),
+        "m s-1",
+        "max",
+        "heightAboveGround",
+        10,
+        "10 m gust speed, max over the past step",
+    ),
+    VarSpec("precip_total", ("tp",), "mm", "accum", description="total precipitation per step"),
+    VarSpec("rain", ("tirf",), "mm", "accum", description="liquid precipitation per step"),
+    VarSpec("snow", ("tsnowp",), "mm", "accum", description="snowfall (water equivalent) per step"),
+    VarSpec("tcc", ("tcc",), "%", description="total cloud cover"),
+    VarSpec("lcc", ("lcc",), "%", description="low cloud cover"),
+    VarSpec("mcc", ("mcc",), "%", description="medium cloud cover"),
+    VarSpec("hcc", ("hcc",), "%", description="high cloud cover"),
+    VarSpec("cape", ("CAPE_INS", "cape"), "J kg-1", description="convective available energy"),
+    VarSpec("sp", ("sp",), "hPa", type_of_level="surface", description="surface pressure"),
+    VarSpec("mslp", ("prmsl",), "hPa", description="mean sea level pressure"),
+    VarSpec("orog", ("orog", "h", "z"), "m", "static", description="model orography"),
+)
+
+
+@dataclass(frozen=True)
+class ConvertProfile:
+    """What to read in the staged packages of one model."""
+
+    variables: tuple[VarSpec, ...]
+    static_packages: frozenset[str] = frozenset()
+    required: frozenset[str] = REQUIRED
+
+
+PROFILES: dict[str, ConvertProfile] = {
+    "arome": ConvertProfile(AROME_VARIABLES, STATIC_PACKAGES),
+    "arpege": ConvertProfile(ARPEGE_VARIABLES),
+}
+
 
 def normalize_units(units: str) -> str:
     """Spelling-independent form of a unit string.
@@ -138,6 +213,8 @@ _CONVERSIONS: dict[tuple[str, str], Callable[[np.ndarray], np.ndarray]] = {
     ("1", "%"): lambda v: v * np.float32(100.0),
     ("Proportion", "%"): lambda v: v * np.float32(100.0),
     ("m2 s-2", "m"): lambda v: v / np.float32(GRAVITY),
+    # Precipitation as a water depth (ECMWF-style ``tp`` in m).
+    ("m", "mm"): lambda v: v * np.float32(1000.0),
 }
 # Same quantity, same scale: stored as is.
 _SAME_UNITS = {
@@ -157,23 +234,25 @@ def convert_units(values: np.ndarray, grib_units: str, target: str) -> np.ndarra
 
 
 def per_step(cumulative: np.ndarray, steps: np.ndarray) -> np.ndarray:
-    """Accumulations since run start (time first) -> amount over each step.
+    """Accumulations since run start (time first) -> amount since the previous field.
 
-    The value at lead time 0 is NaN (nothing accumulated yet, no field). The
-    accumulation at the first listed step after 0 is taken from 0. A missing
-    field (NaN) makes its own step and the next one NaN. Small negative values
-    from GRIB packing are clipped to 0.
+    The value at lead time 0 is NaN (nothing accumulated yet). Each value is
+    the amount accumulated since the previous lead time that has a field, or
+    since the run start for the first one. A missing field (NaN) stays NaN and
+    the next present field covers both steps: ARPEGE precipitation becomes
+    3-hourly after +48 h on an hourly time axis, and totals are preserved.
+    Small negative values from GRIB packing are clipped to 0.
     """
-    out = np.empty_like(cumulative)
+    out = np.full_like(cumulative, np.nan)
     prev = np.zeros_like(cumulative[0])
     for i, step in enumerate(steps):
         if step == 0:
-            out[i] = np.nan
             prev = np.zeros_like(cumulative[0])
             continue
         cur = cumulative[i]
-        out[i] = cur - prev
-        prev = cur
+        present = ~np.isnan(cur)
+        out[i] = np.where(present, cur - prev, np.nan)
+        prev = np.where(present, cur, prev)
     np.maximum(out, 0, out=out, where=~np.isnan(out))
     return out
 
@@ -277,12 +356,17 @@ def convert_run(
     variables: tuple[VarSpec, ...] = AROME_VARIABLES,
     bbox: BBox | None = FRANCE_BBOX,
     static_packages: frozenset[str] = STATIC_PACKAGES,
+    required: frozenset[str] = REQUIRED,
+    constants: Path | None = None,
     attrs: dict | None = None,
 ) -> ConvertReport:
     """Build ``<out_root>/<run tag>.zarr`` from a complete staged run and publish it.
 
     Packages in ``static_packages`` only provide static fields (orography): SP3
     also carries other parameters that must not override SP1/SP2 fields.
+    ``constants`` is an optional GRIB file read for static fields only (e.g.
+    Météo-France ``constant-eurat01.grib2`` for the ARPEGE orography); a static
+    field found there wins over one found in the packages.
     """
     stage = RunStage(Path(raw_root), run)
     manifest = stage.read_manifest()
@@ -295,6 +379,10 @@ def convert_run(
         for package, labels in manifest["packages"].items()
         for label in labels
     ]
+    if constants is not None:
+        # Read first, so its static fields are kept over any found later.
+        static_packages = static_packages | {CONSTANTS_PACKAGE}
+        files.insert(0, (CONSTANTS_PACKAGE, Path(constants)))
     time_specs = tuple(v for v in variables if v.kind != "static")
     static_specs = tuple(v for v in variables if v.kind == "static")
 
@@ -351,7 +439,7 @@ def convert_run(
 
     if grid is None:
         raise ValueError(f"{stage.path}: no known variable in the run")
-    absent = sorted(REQUIRED - set(fields) - set(static))
+    absent = sorted(required - set(fields) - set(static))
     if absent:
         raise ValueError(
             f"{stage.path}: required variables missing: {absent}; "
@@ -449,7 +537,7 @@ def _var_attrs(spec: VarSpec, grib_units: str) -> dict:
     if spec.description:
         attrs["description"] = spec.description
     if spec.kind == "accum":
-        attrs["accumulation"] = "per step, ending at the time coordinate"
+        attrs["accumulation"] = "since the previous time with a value, ending at this time"
     if spec.kind == "max":
         attrs["cell_method"] = "time: maximum over the step ending at the time coordinate"
     return attrs

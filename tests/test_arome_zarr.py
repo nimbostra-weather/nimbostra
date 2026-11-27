@@ -14,6 +14,7 @@ eccodes = pytest.importorskip("eccodes")
 from ingest.arome_convert import main as cli_main
 from ingest.arome_zarr import (
     AROME_VARIABLES,
+    ARPEGE_VARIABLES,
     MessageMeta,
     _match,
     convert_run,
@@ -35,7 +36,14 @@ HOURS = [0, 1, 2, 3]
 
 
 def make_message(
-    short_name, values, *, end_step=0, step_type="instant", type_of_level=None, level=None
+    short_name,
+    values,
+    *,
+    end_step=0,
+    step_type="instant",
+    type_of_level=None,
+    level=None,
+    param_id=None,
 ):
     gid = eccodes.codes_grib_new_from_samples("regular_ll_sfc_grib2")
     try:
@@ -49,7 +57,10 @@ def make_message(
         eccodes.codes_set_double(gid, "longitudeOfLastGridPointInDegrees", LON_W + STEP * (NI - 1))
         eccodes.codes_set_double(gid, "iDirectionIncrementInDegrees", STEP)
         eccodes.codes_set_double(gid, "jDirectionIncrementInDegrees", STEP)
-        eccodes.codes_set(gid, "shortName", short_name)
+        if param_id is not None:  # when the short name is ambiguous (tp: m or kg m-2)
+            eccodes.codes_set(gid, "paramId", param_id)
+        else:
+            eccodes.codes_set(gid, "shortName", short_name)
         if type_of_level:
             eccodes.codes_set(gid, "typeOfLevel", type_of_level)
         if level is not None:
@@ -157,11 +168,21 @@ def test_per_step_from_cumulative():
     np.testing.assert_allclose(out[1:, 0], [1.0, 2.0, 0.0, 3.001], atol=1e-5)
 
 
-def test_per_step_missing_field_propagates_to_next_step():
+def test_per_step_missing_field_is_bridged_by_the_next_one():
+    # The step after a missing field holds the amount since the last present one.
     cum = np.array([1.0, np.nan, 4.0], dtype=np.float32)[:, None]
     out = per_step(cum, np.array([1, 2, 3]))
     assert out[0, 0] == pytest.approx(1.0)
-    assert np.isnan(out[1, 0]) and np.isnan(out[2, 0])
+    assert np.isnan(out[1, 0])
+    assert out[2, 0] == pytest.approx(3.0)
+
+
+def test_per_step_bridges_per_point():
+    # A NaN at one point only (bitmap) does not disturb the other points.
+    cum = np.array([[1.0, 1.0], [2.0, np.nan], [5.0, 6.0]], dtype=np.float32)
+    out = per_step(cum, np.array([1, 2, 3]))
+    np.testing.assert_allclose(out[:, 0], [1.0, 1.0, 3.0])
+    assert np.isnan(out[1, 1]) and out[2, 1] == pytest.approx(5.0)
 
 
 def test_convert_units():
@@ -198,6 +219,7 @@ def test_convert_units_cape_spellings_are_identity(grib_units):
         ("Proportion", "%", 0.25, 25.0),
         ("%", "%", 40.0, 40.0),
         ("m2 s-2", "m", 98066.5, 10000.0),
+        ("m", "mm", 0.0015, 1.5),
     ],
 )
 def test_convert_units_spelling_variants(grib_units, target, value, expected):
@@ -229,7 +251,7 @@ def test_every_stored_unit_accepts_its_eccodes_spelling():
         "hPa": "Pa",
         "m": "m",
     }
-    for spec in AROME_VARIABLES:
+    for spec in (*AROME_VARIABLES, *ARPEGE_VARIABLES):
         convert_units(np.float32([1.0]), eccodes[spec.units], spec.units)
 
 

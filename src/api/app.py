@@ -4,10 +4,11 @@ Routes:
 - ``GET /v1/models``: available models, their current run, grid extent and variables;
 - ``GET /v1/raw/{model}/point``: stored values interpolated at a point, no correction;
 - ``GET /v1/forecast/point``: altitude-corrected forecast with derived quantities
-  (deterministic AROME for now; the multi-model clusters come later).
+  (one deterministic model, AROME by default; the multi-model clusters come later).
 
 Run with ``uvicorn api.app:app`` from ``src``. Paths come from ``DATA_DIR``
-(environment or ``.env``). Endpoints are plain ``def``: FastAPI runs them in its
+(environment or ``.env``), the served models from ``NIMBOSTRA_MODELS``
+(comma-separated, default ``arome,arpege``). Endpoints are plain ``def``: FastAPI runs them in its
 thread pool, which suits the blocking Zarr reads.
 
 Responses carry ``Cache-Control`` and an ``ETag`` derived from the run and the
@@ -32,7 +33,7 @@ from fastapi.responses import JSONResponse
 
 from ingest.dem import open_dem
 from ingest.dotenv import load_dotenv
-from ingest.health import DEFAULT_MAX_AGE_HOURS, check_freshness
+from ingest.health import DEFAULT_MAX_AGE_HOURS, check_freshness, configured_models
 from point.reader import ElevationSource, NoRun, OutOfDomain, RunStore, derive, read_raw
 
 API_VERSION = "v1"
@@ -53,6 +54,7 @@ class ModelInfo:
 
 KNOWN_MODELS = {
     "arome": ModelInfo("arome", "AROME (Météo-France)", "0.01°"),
+    "arpege": ModelInfo("arpege", "ARPEGE (Météo-France)", "0.1°"),
 }
 
 
@@ -132,7 +134,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings is None:
         load_dotenv()
         data_dir = Path(os.environ.get("DATA_DIR", "data/zarr"))
-        settings = Settings(data_dir=data_dir, dem=open_dem(data_dir))
+        models = tuple(m for m in configured_models() if m in KNOWN_MODELS)
+        settings = Settings(data_dir=data_dir, models=models, dem=open_dem(data_dir))
     app = FastAPI(
         title="Nimbostra API",
         version="0.1.0",
@@ -250,7 +253,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             float | None,
             Query(ge=-500, le=5000, description="Altitude du lieu en m (sinon MNT ou modèle)"),
         ] = None,
-        model: Annotated[str, Query(description="Modèle (AROME seul pour l'instant)")] = "arome",
+        model: Annotated[str, Query(description="Modèle déterministe : arome ou arpege")] = "arome",
     ) -> Response:
         timer = Timer()
         run, group = open_latest(model)

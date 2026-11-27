@@ -1,11 +1,15 @@
-"""Download client for the Météo-France "API Paquets" (deterministic AROME).
+"""Download client for the Météo-France "API Paquets" (deterministic AROME and ARPEGE).
 
 Facts this module relies on (Météo-France Confluence page "API Paquet Modèles",
-data.gouv dataservice "API Paquet AROME", checked 2026-11-27, and the AROME spike):
-- base ``https://public-api.meteofrance.fr/previnum/DPPaquetAROME/v1``;
-- catalogue ``/models/AROME/grids/{grid}/packages/{package}`` lists runs, and with
-  ``?referencetime=`` lists one file per lead time;
-- download ``.../packages/{package}/productARO?referencetime=..&time=..&format=grib2``;
+data.gouv dataservices "API Paquet AROME" and "API Package ARPEGE", checked
+2026-11-27, and the AROME spike):
+- base ``https://public-api.meteofrance.fr/previnum/DPPaquet{AROME,ARPEGE}/v1``;
+- catalogue ``/models/{model}/grids/{grid}/packages/{package}`` lists runs, and with
+  ``?referencetime=`` lists one file per lead time (AROME, ``07H``) or per
+  lead-time range (ARPEGE, ``000H012H``);
+- download ``.../packages/{package}/product{ARO,ARP}?referencetime=..&time=..&format=grib2``;
+  the ARPEGE names (``DPPaquetARPEGE``, ``productARP``, grid ``0.1``) come from a
+  request reported working on the Infoclimat forum, not from Météo-France pages;
 - catalogue hrefs may omit the ``/v1`` segment (seen in the spike), we add it back;
 - quota 100 requests per minute; packages should be downloaded one after another;
 - interrupted downloads can be resumed with a ``Range`` header (206 response);
@@ -126,7 +130,21 @@ AROME_001 = PaquetsModel(
         PackageSpec("SP3", expected_files=1, limit=1),
     ),
 )
-MODELS = {m.name: m for m in (AROME_001,)}
+# ARPEGE 0.1° (EURAT01, 20-72 N, 32 W-42 E), runs 0/6/12/18z up to +102 h: nine
+# files per package, 000H012H, 013H024H, ... 085H096H, 097H102H (data.gouv
+# "Paquets Arpège 0,1°", 2026-11-27). SP1 and SP2 hold the surface fields.
+ARPEGE_01 = PaquetsModel(
+    name="arpege",
+    api="DPPaquetARPEGE",
+    model="ARPEGE",
+    grid="0.1",
+    product="productARP",
+    packages=(
+        PackageSpec("SP1", expected_files=9),
+        PackageSpec("SP2", expected_files=9),
+    ),
+)
+MODELS = {m.name: m for m in (AROME_001, ARPEGE_01)}
 
 
 # --------------------------------------------------------------------------- run / time helpers

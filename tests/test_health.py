@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from test_point import RUN, make_store
 
 from api.app import Settings, create_app
-from ingest.health import check_freshness, main, send_alert
+from ingest.health import check_freshness, configured_models, main, send_alert
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 
@@ -54,10 +54,31 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
     make_store(tmp_path / "arome", datetime.now(UTC).replace(minute=0, second=0, microsecond=0))
+    monkeypatch.setenv("NIMBOSTRA_MODELS", "arome")
     assert main(["check", "--data", str(tmp_path)]) == 0
     assert main(["check", "--data", str(tmp_path / "empty"), "--notify"]) == 1
     assert main(["alert", "échec de test"]) == 0
     assert "aucun run" in capsys.readouterr().out
+
+
+def test_configured_models():
+    assert configured_models({}) == ("arome", "arpege")
+    assert configured_models({"NIMBOSTRA_MODELS": " arome , "}) == ("arome",)
+    assert configured_models({"NIMBOSTRA_MODELS": ""}) == ("arome", "arpege")
+
+
+def test_cli_checks_every_model_and_alerts_once(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NIMBOSTRA_MODELS", raising=False)
+    monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
+    sent = []
+    monkeypatch.setattr("ingest.health.send_alert", lambda text, url: sent.append(text))
+    make_store(tmp_path / "arome", datetime.now(UTC).replace(minute=0, second=0, microsecond=0))
+    assert main(["check", "--data", str(tmp_path), "--notify"]) == 1
+    out = capsys.readouterr().out
+    assert "arome : dernier run" in out and "arpege : aucun run" in out
+    assert len(sent) == 1 and "arpege" in sent[0] and "arome" not in sent[0]
+    assert main(["check", "--data", str(tmp_path), "--model", "arome"]) == 0
 
 
 def test_health_endpoint(tmp_path, monkeypatch):

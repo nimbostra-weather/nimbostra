@@ -89,6 +89,19 @@ def total_precipitation(rain, snow, graupel) -> np.ndarray:
     return np.where(np.all(np.isnan(stacked), axis=0), np.nan, total)
 
 
+def liquid_remainder(total, snow, graupel) -> np.ndarray:
+    """Liquid part of a total precipitation: total minus the known solid phases, >= 0.
+
+    A missing solid component counts as 0; NaN where the total is NaN.
+    """
+    total = np.asarray(total, dtype=float)
+    solid = np.zeros_like(total)
+    for part in (snow, graupel):
+        if part is not None:
+            solid = solid + np.nan_to_num(np.asarray(part, dtype=float))
+    return np.where(np.isnan(total), np.nan, np.maximum(total - solid, 0.0))
+
+
 PRECIP_TYPES = ("none", "rain", "snow", "graupel", "mixed")
 
 
