@@ -22,7 +22,8 @@ Caddy. Front en JS vanilla (ES6, sans bundler). Serveur Debian 13.
 - Cumuls convertis en « par pas » et unités normalisées à l'ingestion.
 - Correction d'altitude à la lecture (MNT vs orographie du modèle).
 - Clusters : à la demande, par point, avec cache ; distance sur
-  t2m, précipitations (cumul 3 h, transformées), vent (u,v), nébulosité.
+  t2m, précipitations (cumul 3 h, transformées), vent (u,v), nébulosité
+  totale (`tcc`) et basse (`lcc`), toutes deux avec leur poids plein.
   Humidité, pression, rafales : stockées mais hors distance.
 - Poids : un poids par modèle (config/weights.yml), poids par membre
   = poids_modèle / nombre_de_membres, avec décroissance en fin de portée.
