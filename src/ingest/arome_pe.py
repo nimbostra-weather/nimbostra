@@ -361,6 +361,16 @@ class Resolution:
                 )
         return out
 
+    def is_current(self) -> bool:
+        """False for a resolution saved by an older version of the variable table."""
+        names = set(self.indicators) | set(self.unresolved)
+        return names == set(VARIABLES_BY_NAME)
+
+    def missing_required(self) -> list[str]:
+        return [
+            n for n in self.unresolved if n in VARIABLES_BY_NAME and VARIABLES_BY_NAME[n].required
+        ]
+
     def to_json(self) -> str:
         d = asdict(self)
         d["run"] = self.run.astimezone(UTC).isoformat()
@@ -1078,15 +1088,20 @@ def main(argv: list[str] | None = None) -> int:
                 f"moyenne {np.nanmean(f.values):.1f} °C"
             )
             print(f"appels HTTP : {client.http_calls}, 429 : {client.throttled}")
-            return 0 if not [n for n in res.unresolved if VARIABLES_BY_NAME[n].required] else 1
+            return 0 if not res.missing_required() else 1
 
         run_dir = args.raw / run_tag(args.run) if args.run else None
+        res = None
         if run_dir is not None and (run_dir / RESOLUTION_FILE).exists():
             res = Resolution.from_json((run_dir / RESOLUTION_FILE).read_text())
-        else:
+            if not res.is_current():
+                # Saved by an older variable table (e.g. gust10 before gust_u10/gust_v10).
+                logger.info("saved resolution is outdated, resolving the run again")
+                res = None
+        if res is None:
             res = discover(client, args.run, cache)
             run_dir = args.raw / run_tag(res.run)
-        missing_required = [n for n in res.unresolved if VARIABLES_BY_NAME[n].required]
+        missing_required = res.missing_required()
         _print_resolution(res)
         if missing_required:
             print(f"variables obligatoires introuvables : {missing_required}", file=sys.stderr)

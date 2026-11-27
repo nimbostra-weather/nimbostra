@@ -613,3 +613,31 @@ def test_cli_reports_throttling_without_traceback(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(arome_pe, "_client", lambda args: make_client(ThrottledMetadata()))
     assert arome_pe.main(["plan", "--raw", str(tmp_path)]) == 1
     assert "quota" in capsys.readouterr().err
+
+
+def test_cli_fetch_with_outdated_saved_resolution(tmp_path, monkeypatch):
+    # resolution.json written before gusts were renamed (gust10 -> gust_u10/gust_v10).
+    run_dir = tmp_path / "20261127T09Z"
+    run_dir.mkdir()
+    old = {
+        "run": RUN.isoformat(),
+        "indicators": {"t2m": "TEMPERATURE__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND"},
+        "intervals": {"t2m": None},
+        "steps_seconds": [0, 3600],
+        "unresolved": ["gust10", "orog"],
+        "steps_source": "describe",
+        "members": [0],
+        "max_lead_hours": 1,
+    }
+    (run_dir / RESOLUTION_FILE).write_text(json.dumps(old))
+    assert not Resolution.from_json(json.dumps(old)).is_current()
+    assert Resolution.from_json(json.dumps(old)).missing_required() == []
+
+    wcs = FakeWcs()
+    monkeypatch.setattr(arome_pe, "_client", lambda args: make_client(wcs))
+    argv = ["fetch", "--run", "20261127T09Z", "--members", "1", "--max-lead", "1"]
+    assert arome_pe.main([*argv, "--raw", str(tmp_path)]) == 0
+    saved = Resolution.from_json((run_dir / RESOLUTION_FILE).read_text())
+    assert saved.is_current() and "gust_u10" in saved.indicators
+    assert wcs.count("GetCapabilities") == 1
+    assert any("gust_u10" in str(p) for p in run_dir.rglob("*.grib2"))
