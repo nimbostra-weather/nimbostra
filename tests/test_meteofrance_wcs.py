@@ -388,3 +388,37 @@ def test_429_log_shows_rate_limit_headers_and_body(caplog):
         client.fetch(req())
     text = caplog.text
     assert "x-ratelimit-remaining" in text.lower() and "throttled out" in text
+
+
+WCS_THROTTLED_BODY = (
+    '<?xml version="1.0" encoding="UTF-8"?><mw:fault xmlns:mw="http://metwork-framework.org/">'
+    "<mw:code>868500</mw:code><mw:message>Synopsis backend error</mw:message>"
+    '<mw:description>b\'{"code":"900804","message":"Message throttled out",'
+    '"description":"You have exceeded your quota .You can access API after '
+    '2026-Nov.-27 17:34:10+0000 UTC","nextAccessTime":"2026-Nov.-27 17:34:10+0000 UTC"}\''
+    "</mw:description></mw:fault>"
+)
+
+
+def test_parse_retry_after_from_wcs_xml_fault():
+    now = datetime(2026, 11, 27, 17, 33, 40, tzinfo=UTC)
+    resp = httpx.Response(429, text=WCS_THROTTLED_BODY)
+    assert parse_retry_after(resp, now) == pytest.approx(31.0)
+    text_only = WCS_THROTTLED_BODY.replace(',"nextAccessTime":"2026-Nov.-27 17:34:10+0000 UTC"', "")
+    assert parse_retry_after(httpx.Response(429, text=text_only), now) == pytest.approx(31.0)
+
+
+def test_rate_limiter_slows_down_after_429():
+    clock = FakeClock()
+    limiter = RateLimiter(5.0, clock=clock.clock, sleep=clock.sleep)
+    assert limiter.slow_down() == pytest.approx(4.0)
+    assert limiter.slow_down(0.5) == pytest.approx(2.0)
+    assert limiter.slow_down(0.1) == pytest.approx(1.0)  # floor
+
+
+def test_fetch_429_lowers_the_shared_rate():
+    responses = iter([httpx.Response(429, text="throttled"), httpx.Response(200, content=GRIB)])
+    client, _ = make_client(lambda r: next(responses))
+    before = client.limiter.rate
+    client.fetch(req())
+    assert client.limiter.rate == pytest.approx(before * 0.8)

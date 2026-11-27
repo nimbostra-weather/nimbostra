@@ -21,6 +21,7 @@ import email.utils
 import logging
 import os
 import random
+import re
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -319,6 +320,17 @@ class RateLimiter:
         with self._lock:
             self._next_slot = max(self._next_slot, self._clock() + seconds)
 
+    @property
+    def rate(self) -> float:
+        return 1.0 / self._interval
+
+    def slow_down(self, factor: float = 0.8, min_rate: float = 1.0) -> float:
+        """Lower the rate after a 429 (multiplicative decrease); return the new rate."""
+        with self._lock:
+            rate = max(min_rate, min(self.rate, self.rate * factor))
+            self._interval = 1.0 / rate
+            return rate
+
 
 # --------------------------------------------------------------------------- raw staging
 
@@ -380,20 +392,39 @@ def parse_retry_after(resp: httpx.Response, now: datetime | None = None) -> floa
                 return max(0.0, (when - now).total_seconds())
             except (TypeError, ValueError):
                 pass
+    next_access = None
     try:
         next_access = resp.json().get("nextAccessTime")
     except (ValueError, AttributeError):
-        return None
+        pass
+    if not next_access:
+        # The WCS wraps the gateway message in an XML fault (seen 2026-11-27):
+        # "...Message throttled out","description":"You have exceeded your quota
+        # .You can access API after <time>" (or a nextAccessTime field).
+        m = _NEXT_ACCESS.search(resp.text)
+        next_access = (m.group(1) or m.group(2)).strip() if m else None
     if not next_access:
         return None
     # Format seen in meteole: "2024-Jan.-16 09:00:00+0000 UTC".
-    for fmt in ("%Y-%b.-%d %H:%M:%S%z UTC", "%Y-%b-%d %H:%M:%S%z UTC"):
+    for fmt in (
+        "%Y-%b.-%d %H:%M:%S%z UTC",
+        "%Y-%b-%d %H:%M:%S%z UTC",
+        "%Y-%b.-%d %H:%M:%S%z",
+        "%Y-%b-%d %H:%M:%S%z",
+    ):
         try:
             when = datetime.strptime(next_access, fmt)
             return max(0.0, (when - now).total_seconds() + 1.0)
         except ValueError:
             continue
+    logger.debug("unparsed next access time %r", next_access)
     return None
+
+
+_NEXT_ACCESS = re.compile(
+    r'nextAccessTime\\?"?\s*:\s*\\?"([^"\\]+)'
+    r"|access API after\s+(\d{4}-[A-Za-z]{3}\.?-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{4}(?: UTC)?)"
+)
 
 
 @dataclass
@@ -494,10 +525,12 @@ class WcsClient:
                     hint if hint is not None else self.retry.backoff(attempt, self._rng),
                 )
                 wait = min(wait, self.retry.max_delay)
+                rate = self.limiter.slow_down()
                 logger.warning(
-                    "429 on %s, pausing all workers %.1fs (%s)",
+                    "429 on %s, pausing all workers %.1fs, rate now %.2f req/s (%s)",
                     req.key,
                     wait,
+                    rate,
                     _throttle_details(resp),
                 )
                 self.limiter.pause(wait)
@@ -573,7 +606,7 @@ def _throttle_details(resp: httpx.Response) -> str:
         for k, v in resp.headers.items()
         if any(w in k.lower() for w in ("rate", "limit", "retry", "quota", "throttl"))
     }
-    body = " ".join(resp.text[:300].split())
+    body = " ".join(resp.text[:800].split())
     return f"headers={headers} body={body!r}"
 
 
