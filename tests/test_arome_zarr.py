@@ -13,9 +13,11 @@ eccodes = pytest.importorskip("eccodes")
 
 from ingest.arome_convert import main as cli_main
 from ingest.arome_zarr import (
+    AROME_VARIABLES,
     convert_run,
     convert_units,
     next_run_to_convert,
+    normalize_units,
     per_step,
     prune_stores,
     published_runs,
@@ -169,6 +171,64 @@ def test_convert_units():
     assert convert_units(v, "m s**-1", "m s-1") is v
     with pytest.raises(ValueError, match="no conversion"):
         convert_units(v, "C", "degC")
+
+
+@pytest.mark.parametrize(
+    "grib_units",
+    ["m**2 s**-2", "m2 s-2", "J kg**-1", "J kg-1", " m**2  s**-2 "],
+)
+def test_convert_units_cape_spellings_are_identity(grib_units):
+    # 1 J kg-1 = 1 m2 s-2: CAPE is stored unchanged whatever the spelling.
+    v = np.float32([0.0, 1234.5])
+    out = convert_units(v, grib_units, "J kg-1")
+    np.testing.assert_array_equal(out, v)
+
+
+@pytest.mark.parametrize(
+    ("grib_units", "target", "value", "expected"),
+    [
+        ("kg m**-2", "mm", 1.5, 1.5),
+        ("kg m-2", "mm", 1.5, 1.5),
+        ("m s**-1", "m s-1", 3.0, 3.0),
+        ("m s-1", "m s-1", 3.0, 3.0),
+        ("0-1", "%", 0.25, 25.0),
+        ("1", "%", 0.25, 25.0),
+        ("Proportion", "%", 0.25, 25.0),
+        ("%", "%", 40.0, 40.0),
+        ("m2 s-2", "m", 98066.5, 10000.0),
+    ],
+)
+def test_convert_units_spelling_variants(grib_units, target, value, expected):
+    out = convert_units(np.float32([value]), grib_units, target)
+    np.testing.assert_allclose(out, [expected], rtol=1e-6)
+
+
+def test_geopotential_is_not_identity_for_metres():
+    # Same GRIB unit as CAPE, but orography in metres must still be divided by g.
+    out = convert_units(np.float32([9806.65]), "m**2 s**-2", "m")
+    np.testing.assert_allclose(out, [1000.0], rtol=1e-6)
+
+
+def test_normalize_units():
+    assert normalize_units("m**2 s**-2") == "m2 s-2"
+    assert normalize_units("J kg**-1") == "J kg-1"
+    assert normalize_units("  kg   m**-2 ") == "kg m-2"
+    assert normalize_units("(0 - 1)") == "(0 - 1)"
+
+
+def test_every_stored_unit_accepts_its_eccodes_spelling():
+    # eccodes spelling of each stored unit, as found in GRIB2 tables.
+    eccodes = {
+        "degC": "K",
+        "%": "%",
+        "m s-1": "m s**-1",
+        "mm": "kg m**-2",
+        "J kg-1": "J kg**-1",
+        "hPa": "Pa",
+        "m": "m",
+    }
+    for spec in AROME_VARIABLES:
+        convert_units(np.float32([1.0]), eccodes[spec.units], spec.units)
 
 
 # --------------------------------------------------------------------------- conversion

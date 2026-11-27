@@ -117,28 +117,39 @@ REQUIRED = frozenset({"t2m", "u10", "v10", "orog"})
 STATIC_PACKAGES = frozenset({"SP3"})
 
 
-# Conversions from the GRIB ``units`` key to the stored unit.
+def normalize_units(units: str) -> str:
+    """Spelling-independent form of a unit string.
+
+    eccodes writes exponents as ``m**2 s**-2`` while other tables use
+    ``m2 s-2``: drop ``**`` and collapse whitespace so both compare equal.
+    """
+    return " ".join(units.replace("**", "").split())
+
+
+# Conversions from the (normalized) GRIB ``units`` key to the stored unit.
+# Keyed on the target too: ``m2 s-2`` is a geopotential for ``m`` (divided by g)
+# but a specific energy for ``J kg-1`` (1 J kg-1 = 1 m2 s-2, identity).
 _CONVERSIONS: dict[tuple[str, str], Callable[[np.ndarray], np.ndarray]] = {
     ("K", "degC"): lambda v: v - np.float32(273.15),
     ("Pa", "hPa"): lambda v: v / np.float32(100.0),
     ("(0 - 1)", "%"): lambda v: v * np.float32(100.0),
-    ("kg m**-2", "mm"): lambda v: v,
-    ("m**2 s**-2", "m"): lambda v: v / np.float32(GRAVITY),
+    ("0-1", "%"): lambda v: v * np.float32(100.0),
+    ("1", "%"): lambda v: v * np.float32(100.0),
+    ("Proportion", "%"): lambda v: v * np.float32(100.0),
+    ("m2 s-2", "m"): lambda v: v / np.float32(GRAVITY),
 }
+# Same quantity, same scale: stored as is.
 _SAME_UNITS = {
-    ("%", "%"),
-    ("m", "m"),
-    ("m s**-1", "m s-1"),
-    ("J kg**-1", "J kg-1"),
-    ("hPa", "hPa"),
-    ("degC", "degC"),
+    ("kg m-2", "mm"),
+    ("m2 s-2", "J kg-1"),
 }
 
 
 def convert_units(values: np.ndarray, grib_units: str, target: str) -> np.ndarray:
-    if (grib_units, target) in _SAME_UNITS or grib_units == target:
+    key = (normalize_units(grib_units), normalize_units(target))
+    if key[0] == key[1] or key in _SAME_UNITS:
         return values
-    fn = _CONVERSIONS.get((grib_units, target))
+    fn = _CONVERSIONS.get(key)
     if fn is None:
         raise ValueError(f"no conversion from GRIB units {grib_units!r} to {target!r}")
     return fn(values)

@@ -104,7 +104,12 @@ puis `$DATA_DIR/arome/latest.json` qui désigne le run à lire.
 | orog | orog, h ou z | m | z divisé par g |
 
 Les unités sont converties d'après la clé GRIB `units`. Une unité inattendue
-arrête la conversion plutôt que de produire une valeur fausse.
+arrête la conversion plutôt que de produire une valeur fausse. L'écriture des
+exposants est indifférente (`m**2 s**-2` d'eccodes ou `m2 s-2`). Une même unité
+GRIB peut dépendre de la variable cible : `m**2 s**-2` est un géopotentiel
+divisé par g pour `orog`, mais une énergie massique gardée telle quelle pour
+`cape` (1 J/kg = 1 m²/s²). La fraction `(0 - 1)` (ou `0-1`, `1`, `Proportion`)
+est multipliée par 100.
 Il faut au minimum t2m, u10, v10 et orog, sinon la conversion échoue et
 l'ancien Zarr reste en place.
 
