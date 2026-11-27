@@ -1,8 +1,9 @@
 """Freshness check of the published runs, and alerts.
 
-``python -m ingest.health`` exits 1 when the latest published AROME run is older
-than ``ALERT_MAX_AGE_HOURS`` (default 12 h: runs every 3 to 6 h, plus the
-publication delay) and, with ``--notify``, sends an alert.
+``python -m ingest.health`` exits 1 when the latest published run of a model in
+``NIMBOSTRA_MODELS`` (default ``arome,arpege``) is older than
+``ALERT_MAX_AGE_HOURS`` (default 12 h: runs every 3 to 6 h, plus the publication
+delay) and, with ``--notify``, sends one alert listing the late models.
 ``python -m ingest.health alert "<text>"`` only sends an alert (used by the
 systemd ``OnFailure=`` unit).
 
@@ -30,6 +31,15 @@ from ingest.dotenv import load_dotenv
 logger = logging.getLogger("ingest.health")
 
 DEFAULT_MAX_AGE_HOURS = 12.0
+DEFAULT_MODELS = ("arome", "arpege")
+
+
+def configured_models(env: dict[str, str] | None = None) -> tuple[str, ...]:
+    """Models served and checked: ``NIMBOSTRA_MODELS`` (comma-separated) or the default."""
+    env = os.environ if env is None else env
+    raw = env.get("NIMBOSTRA_MODELS", "")
+    models = tuple(m.strip() for m in raw.split(",") if m.strip())
+    return models or DEFAULT_MODELS
 
 
 @dataclass(frozen=True)
@@ -101,7 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("command", nargs="?", default="check", choices=["check", "alert"])
     ap.add_argument("text", nargs="?", default="", help="alert text (command alert)")
     ap.add_argument("--notify", action="store_true", help="send an alert when stale")
-    ap.add_argument("--model", default="arome")
+    ap.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        help="model to check, repeatable (default: $NIMBOSTRA_MODELS or arome,arpege)",
+    )
     ap.add_argument("--data", type=Path, default=Path(os.environ.get("DATA_DIR", "data/zarr")))
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -113,12 +128,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     max_age = float(os.environ.get("ALERT_MAX_AGE_HOURS", DEFAULT_MAX_AGE_HOURS))
-    f = check_freshness(args.data / args.model, args.model, max_age_hours=max_age)
-    print(f.message())
-    if f.ok:
+    checks = [
+        check_freshness(args.data / m, m, max_age_hours=max_age)
+        for m in (args.model or configured_models())
+    ]
+    for f in checks:
+        print(f.message())
+    late = [f for f in checks if not f.ok]
+    if not late:
         return 0
     if args.notify:
-        send_alert(f"[{host}] {f.message()}", url)
+        send_alert(f"[{host}] " + " ; ".join(f.message() for f in late), url)
     return 1
 
 

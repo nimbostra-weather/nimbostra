@@ -1,4 +1,4 @@
-"""Read a forecast at one point from the published AROME Zarr stores.
+"""Read a forecast at one point from the published Zarr stores (AROME, ARPEGE).
 
 - ``RunStore`` finds the run to read (``latest.json``) and caches open groups.
 - ``read_raw`` interpolates every stored variable at (lat, lon): bilinear on the
@@ -285,18 +285,30 @@ def derive(
         put("wind_direction", derived.wind_direction(s["u10"], s["v10"]), "deg")
     if "gust_u10" in s and "gust_v10" in s:
         put("wind_gust", derived.wind_speed(s["gust_u10"], s["gust_v10"]), "m s-1")
+    elif "gust10" in s:
+        put("wind_gust", s["gust10"], "m s-1")
     if t is not None and rh is not None and wind is not None:
         put("feels_like", derived.feels_like(t, rh, wind), "degC")
-    if "rain" in s:
-        snow, graupel = s.get("snow"), s.get("graupel")
-        put("precipitation", derived.total_precipitation(s["rain"], snow, graupel), "mm")
-        for name in ("rain", "snow", "graupel"):
-            if name in s:
-                put(name, s[name], "mm")
+    rain, snow, graupel = s.get("rain"), s.get("snow"), s.get("graupel")
+    total = None
+    if "precip_total" in s:
+        # ARPEGE: total (all phases) and snow; rain is the remainder.
+        total = s["precip_total"]
+        if rain is None:
+            rain = derived.liquid_remainder(total, snow, graupel)
+    elif rain is not None:
+        total = derived.total_precipitation(rain, snow, graupel)
+    if total is not None:
+        put("precipitation", total, "mm")
+        for name, values in (("rain", rain), ("snow", snow), ("graupel", graupel)):
+            if values is not None:
+                put(name, values, "mm")
         out.series["precipitation_type"] = np.array(
-            derived.precipitation_type(s["rain"], snow, graupel), dtype=object
+            derived.precipitation_type(rain, snow, graupel), dtype=object
         )
         out.units["precipitation_type"] = "|".join(derived.PRECIP_TYPES)
+    if "tcc" in s:
+        put("cloud_total", s["tcc"], "%")
     for name in ("lcc", "mcc", "hcc"):
         if name in s:
             put(f"cloud_{name[0]}", s[name], "%")

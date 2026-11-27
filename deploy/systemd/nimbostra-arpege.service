@@ -1,0 +1,32 @@
+# Download the latest complete ARPEGE 0.1° run, then convert it to Zarr.
+# Both steps are no-ops when nothing new is published.
+# Optional: ARPEGE_CONSTANTS=/data/static/arpege/constant-eurat01.grib2 in .env
+# when the packages carry no orography (see docs/ingestion-arpege.md).
+# Paths and user are defaults: adapt them (see docs/exploitation.md).
+[Unit]
+Description=Nimbostra: ARPEGE ingestion (API Paquets -> Zarr)
+Wants=network-online.target
+After=network-online.target
+OnFailure=nimbostra-alert@%n.service
+
+[Service]
+Type=oneshot
+User=nimbostra
+Group=nimbostra
+WorkingDirectory=/opt/nimbostra/src
+EnvironmentFile=/opt/nimbostra/.env
+ExecStart=/opt/nimbostra/.venv/bin/python -m ingest.arome_fetch fetch --model arpege --keep 2
+ExecStart=/opt/nimbostra/.venv/bin/python -m ingest.arome_convert convert --model arpege --keep 2
+TimeoutStartSec=45min
+Nice=10
+IOSchedulingClass=idle
+# The cropped 0.1° run is small; decoding one EURAT01 field at a time.
+MemoryMax=4G
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/data/raw /data/zarr
+
+[Install]
+WantedBy=multi-user.target
