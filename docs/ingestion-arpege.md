@@ -1,7 +1,7 @@
 # Ingestion ARPEGE 0,1° (API Paquets Météo-France)
 
-ARPEGE passe par la même chaîne qu'AROME : `ingest.arome_fetch` (téléchargement)
-puis `ingest.arome_convert` (Zarr), avec `--model arpege`. La lecture d'un point
+ARPEGE passe par la même chaîne qu'AROME : `ingest.mf_paquets_fetch` (téléchargement)
+puis `ingest.mf_paquets_convert` (Zarr), avec `--model arpege`. La lecture d'un point
 et l'API sont communes (`/v1/forecast/point?model=arpege`).
 
 ## Abonnement
@@ -30,7 +30,7 @@ Modèles » (motif générique des URL), fiche data.gouv « API Package ARPEGE �
 data.gouv « Paquets Arpège 0,1° » (groupes d'échéances, tailles).
 **Non confirmé par Météo-France** : les noms `DPPaquetARPEGE`, `productARP`,
 la grille `0.1` et le format `000H012H` viennent d'une requête rapportée
-comme fonctionnelle sur le forum Infoclimat (2024). `arome_fetch plan --model
+comme fonctionnelle sur le forum Infoclimat (2024). `mf_paquets_fetch plan --model
 arpege` les vérifie au premier essai.
 
 ## Paquets récupérés
@@ -52,10 +52,10 @@ Les noms GRIB ci-dessous ont été vérifiés sur le run réel du 2026-11-27 12z
 
 ```bash
 cd src
-python -m ingest.arome_fetch plan --model arpege       # lecture seule
-python -m ingest.arome_fetch fetch --model arpege --keep 2
-python -m ingest.arome_convert inventory --model arpege
-python -m ingest.arome_convert convert --model arpege --keep 2
+python -m ingest.mf_paquets_fetch plan --model arpege       # lecture seule
+python -m ingest.mf_paquets_fetch fetch --model arpege --keep 2
+python -m ingest.mf_paquets_convert inventory --model arpege
+python -m ingest.mf_paquets_convert convert --model arpege --keep 2
 ```
 
 `inventory` affiche, pour chaque clé GRIB, l'unité, la variable retenue

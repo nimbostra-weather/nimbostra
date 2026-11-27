@@ -101,7 +101,7 @@ def test_deploy_units_point_to_real_modules():
         text = unit.read_text()
         modules |= set(re.findall(r"python -m ([\w.]+)", text))
         assert "uvicorn api.app:app" in text or "python -m" in text
-    assert modules == {"ingest.arome_fetch", "ingest.arome_convert", "ingest.health"}
+    assert modules == {"ingest.mf_paquets_fetch", "ingest.mf_paquets_convert", "ingest.health"}
     for name in modules:
         assert hasattr(importlib.import_module(name), "main")
     for timer in (DEPLOY / "systemd").glob("*.timer"):

@@ -57,8 +57,8 @@ sur le fichier. Variables :
 
 ```bash
 cd src
-python -m ingest.arome_fetch plan              # lecture seule : dernier run complet
-python -m ingest.arome_fetch fetch --keep 2    # téléchargement puis rétention
+python -m ingest.mf_paquets_fetch plan              # lecture seule : dernier run complet
+python -m ingest.mf_paquets_fetch fetch --keep 2    # téléchargement puis rétention
 ```
 
 Codes de sortie : 0 si le run est complet ou s'il n'y a rien de nouveau,
@@ -76,8 +76,8 @@ le spike a mesuré 2,2 Go en 118 s pour SP1 et SP2.
 
 ```bash
 cd src
-python -m ingest.arome_convert inventory        # clés GRIB du dernier run, et variable retenue
-python -m ingest.arome_convert convert --keep 2 # conversion du dernier run complet
+python -m ingest.mf_paquets_convert inventory        # clés GRIB du dernier run, et variable retenue
+python -m ingest.mf_paquets_convert convert --keep 2 # conversion du dernier run complet
 ```
 
 Sortie : `$DATA_DIR/arome/20261127T06Z.zarr`, publié par renommage atomique,

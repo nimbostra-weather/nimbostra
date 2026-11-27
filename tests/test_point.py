@@ -28,7 +28,7 @@ NT = 4
 
 
 def make_store(root, run=RUN, *, t2m=None, orog=1000.0, extra=None):
-    """Write a store with the layout of ingest.arome_zarr (surface group, 32x32 chunks)."""
+    """Write a store with the layout of ingest.mf_paquets_zarr (surface group, 32x32 chunks)."""
     path = root / f"{run.strftime('%Y%m%dT%HZ')}.zarr"
     g = zarr.open_group(str(path), mode="w", zarr_format=3).create_group("surface")
     for name, values in (

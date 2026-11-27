@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from ingest.arome_fetch import main as cli_main
 from ingest.meteofrance_paquets import (
     AROME_001,
     BadRequest,
@@ -30,6 +29,7 @@ from ingest.meteofrance_paquets import (
     staged_runs,
 )
 from ingest.meteofrance_wcs import ApiKeyAuth, ApplicationTokenAuth, RateLimiter, RetryPolicy
+from ingest.mf_paquets_fetch import main as cli_main
 
 RUN = datetime(2026, 11, 27, 6, tzinfo=UTC)
 OLD_RUN = datetime(2026, 11, 27, 3, tzinfo=UTC)
@@ -416,7 +416,7 @@ def test_cli_reads_credentials_from_dotenv_in_parent(monkeypatch, tmp_path):
         seen.update(env)
         raise SystemExit("stop before any HTTP call")
 
-    monkeypatch.setattr("ingest.arome_fetch.make_auth", fake_make_auth)
+    monkeypatch.setattr("ingest.mf_paquets_fetch.make_auth", fake_make_auth)
     with pytest.raises(SystemExit, match="stop before"):
         cli_main(["plan", "--root", str(tmp_path)])
     assert seen["METEOFRANCE_API_KEY"] == "from-file"

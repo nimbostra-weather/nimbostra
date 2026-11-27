@@ -2,7 +2,7 @@
 
 Code : `src/point/reader.py` (lecture et interpolation) et
 `src/point/derived.py` (grandeurs dérivées). Aucune lecture de GRIB :
-seuls les chunks Zarr publiés par `ingest.arome_convert` sont lus, pour
+seuls les chunks Zarr publiés par `ingest.mf_paquets_convert` sont lus, pour
 AROME (`$DATA_DIR/arome`) comme pour ARPEGE (`$DATA_DIR/arpege`).
 
 ## Étapes

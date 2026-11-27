@@ -1,10 +1,10 @@
 """Command line entry point: stage the latest fully published API Paquets run.
 
 Usage (from the repository root, with ``src`` on PYTHONPATH):
-  python -m ingest.arome_fetch plan            # read-only: show the latest complete run
-  python -m ingest.arome_fetch fetch           # download it (no-op if already staged)
-  python -m ingest.arome_fetch fetch --keep 2  # then keep only the 2 latest staged runs
-  python -m ingest.arome_fetch plan --model arpege   # same for ARPEGE 0.1°
+  python -m ingest.mf_paquets_fetch plan            # read-only: show the latest complete run
+  python -m ingest.mf_paquets_fetch fetch           # download it (no-op if already staged)
+  python -m ingest.mf_paquets_fetch fetch --keep 2  # then keep only the 2 latest staged runs
+  python -m ingest.mf_paquets_fetch plan --model arpege   # same for ARPEGE 0.1°
 
 Credentials come from the environment or from a ``.env`` file in the current
 directory or a parent (see ``.env.example``), never from the repository:
@@ -34,7 +34,7 @@ from ingest.meteofrance_paquets import (
 )
 from ingest.meteofrance_wcs import ApiKeyAuth, ApplicationTokenAuth, Auth
 
-logger = logging.getLogger("ingest.arome_fetch")
+logger = logging.getLogger("ingest.mf_paquets_fetch")
 
 
 def make_auth(http: httpx.Client, env: dict[str, str]) -> Auth:
