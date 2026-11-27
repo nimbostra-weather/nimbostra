@@ -48,10 +48,34 @@ seuls les chunks Zarr publiés par `ingest.arome_convert` sont lus.
   froid en vallée. Une vraie limite demande un paquet en altitude (HP ou IP).
 - **Pas de nébulosité totale** dans AROME : seules les couches basse,
   moyenne et haute sont servies.
-- **MNT** : la source d'altitude est un paramètre (`dem`) ; le chargement
-  de Copernicus GLO-90 n'est pas encore écrit.
+- **MNT** : Copernicus GLO-90 est un modèle de surface (arbres et
+  bâtiments compris), lissé à ~90 m : le Mont-Blanc y culmine à 4 790 m.
 
 ## Temps de lecture
 
 Mesuré en local sur un Zarr de 15 variables × 52 échéances, chunks 32 × 32 :
 18 ms en médiane et 24 ms au 95e centile par point, dérivés et JSON compris.
+
+## MNT Copernicus GLO-90
+
+Code : `src/ingest/dem.py`. Construction unique (dépendances optionnelles
+`pip install .[dem]`, soit tifffile et imagecodecs) :
+
+```bash
+cd src
+python -m ingest.dem download   # ~216 tuiles de 1°, ~5 Mo chacune, vers $RAW_DIR/dem
+python -m ingest.dem build      # -> $DATA_DIR/dem/glo90.zarr
+```
+
+- Source : bucket public `copernicus-dem-90m` (AWS Open Data), liste des
+  tuiles dans `tileList.txt`, fichier `<nom>/<nom>.tif`. Pas de tuile en mer :
+  altitude 0. Vérifié le 2026-11-27 sur le readme du bucket et une tuile.
+- Grille : 3 secondes d'arc (1/1200°), 40–52 N et 7 W–11 E, chunks 300 × 300
+  alignés sur les tuiles. Les tuiles au nord de 50° N (800 colonnes) sont
+  rééchantillonnées en longitude.
+- Lecture : bilinéaire, ~1,5 ms. L'API l'utilise automatiquement si
+  `$DATA_DIR/dem/glo90.zarr` existe.
+- Contrôle sur une vraie tuile : Chamonix 1 041 m, lac d'Annecy 446 m.
+- Licence : Copernicus DEM, gratuite ; citation demandée : « Copernicus
+  Digital Elevation Model (DEM) was accessed on DATE from
+  https://registry.opendata.aws/copernicus-dem ».
