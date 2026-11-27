@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi import Path as PathParam
 from fastapi.responses import JSONResponse
 
+from ingest.dem import open_dem
 from ingest.dotenv import load_dotenv
 from point.reader import ElevationSource, NoRun, OutOfDomain, RunStore, derive, read_raw
 
@@ -80,7 +81,8 @@ def _cached(request: Request, body: dict, etag: str) -> Response:
 def create_app(settings: Settings | None = None) -> FastAPI:
     if settings is None:
         load_dotenv()
-        settings = Settings(data_dir=Path(os.environ.get("DATA_DIR", "data/zarr")))
+        data_dir = Path(os.environ.get("DATA_DIR", "data/zarr"))
+        settings = Settings(data_dir=data_dir, dem=open_dem(data_dir))
     app = FastAPI(
         title="Nimbostra API",
         version="0.1.0",
