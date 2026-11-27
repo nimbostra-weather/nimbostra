@@ -22,9 +22,9 @@ Prévision d'ensemble », page PE-AROME de Meteociel, code de meteole 0.2.8.
 ## Variables
 
 Les noms d'indicateurs WCS ne sont pas publiés en dehors de
-`GetCapabilities`. Le module garde, pour chaque variable, une liste de
-candidats et retient le premier présent pour le run. Seul
-`TEMPERATURE__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND` a été vu en vrai.
+`GetCapabilities`. Les noms ci-dessous ont été vérifiés sur la liste
+renvoyée le 2026-11-27 (run 09z). Le module retient, pour chaque variable,
+le premier candidat présent pour le run.
 Une variable facultative introuvable est ignorée et notée dans l'attribut
 `unresolved` du Zarr ; une variable obligatoire introuvable arrête tout.
 
@@ -33,12 +33,11 @@ Une variable facultative introuvable est ignorée et notée dans l'attribut
 | t2m | TEMPERATURE__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND (2 m) | °C | oui |
 | r2 | RELATIVE_HUMIDITY__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND (2 m) | % | non |
 | u10, v10 | U/V_COMPONENT_OF_WIND__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND (10 m) | m/s | oui |
-| gust10 | WIND_SPEED_GUST__… (10 m), intervalle PT1H de préférence | m/s | non |
+| gust_u10, gust_v10 | U/V_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND (10 m) | m/s | non |
 | precip | TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE, PT1H de préférence | mm par pas | oui |
 | snow | TOTAL_SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE | mm par pas | non |
 | lcc | LOW_CLOUD_COVER__GROUND_OR_WATER_SURFACE | % | oui |
 | mslp | PRESSURE__MEAN_SEA_LEVEL | hPa | non |
-| orog | GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE (un seul appel, membre 0) | m | non |
 
 - AROME-PE ne fournit que la nébulosité basse (`lcc`), pas la totale (`tcc`).
   Les clusters utilisent les deux (décision du 2026-11-27) : la basse est
@@ -50,16 +49,31 @@ Une variable facultative introuvable est ignorée et notée dans l'attribut
   Pas de champ à l'échéance 0 pour les cumuls et les rafales.
 - Unités converties d'après la clé GRIB `units` (K → °C, Pa → hPa,
   fraction → %, kg/m² → mm). Une unité inconnue arrête la conversion.
+- Rafales : seulement en composantes U et V, comme AROME déterministe ;
+  la vitesse se calcule à la lecture.
+- Orographie : **aucun indicateur** dans le WCS AROME-PE (le géopotentiel
+  n'existe qu'en niveaux pression). Elle viendra d'une autre source, à
+  décider (voir ci-dessous). Le code sait déjà écrire un champ statique
+  `(lat, lon)`.
+
+## Orographie : sources possibles
+
+1. Paquet AROME 0,025° de l'API Paquets (même grille 0,025° France), un
+   seul fichier statique. Mais c'est le relief d'AROME 1,3 km agrégé, pas
+   celui d'AROME-PE à 2,5 km : à vérifier.
+2. MNT Copernicus GLO-90 moyenné sur les mailles 0,025° : déjà prévu pour
+   la correction d'altitude, mais ce n'est pas le relief du modèle.
 
 ## Coût d'un run
 
 | Run | Appels |
 |-----|--------|
-| 09z, 21z (51 h) | 11 626 champs + 2 métadonnées + 2 sondes |
-| 03z, 15z (45 h) | 10 276 champs + 4 |
+| 09z, 21z (51 h) | 12 900 champs + 2 métadonnées + 2 sondes |
+| 03z, 15z (45 h) | 11 400 champs + 4 |
 
-Soit environ 39 minutes à 5 requêtes par seconde (réglage par défaut),
-20 minutes à 10 par seconde. Le budget par défaut est de 13 000 appels :
+Soit environ 43 minutes à 5 requêtes par seconde (réglage par défaut),
+22 minutes à 10 par seconde. Les rafales en composantes coûtent à elles
+seules 2 550 appels par run de 51 h. Le budget par défaut est de 14 000 appels :
 au-delà, rien n'est lancé.
 
 ## Garde-fous
@@ -96,5 +110,5 @@ python -m ingest.arome_pe convert --keep 2
 
 Sortie : `$DATA_DIR/arome-pe/20261127T09Z.zarr` (groupe `surface`,
 dimensions `member, time, lat, lon`, chunks tous membres × toutes
-échéances × 8 × 8 points ; `orog` en `lat, lon`), puis `latest.json`.
+échéances × 8 × 8 points), puis `latest.json`.
 Mémoire : environ 1,6 Go par variable pendant la conversion.

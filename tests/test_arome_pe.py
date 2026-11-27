@@ -58,12 +58,13 @@ AVAILABLE = [
     "RELATIVE_HUMIDITY__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
     "U_COMPONENT_OF_WIND__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
     "V_COMPONENT_OF_WIND__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
-    "WIND_SPEED_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND_PT1H",
+    "U_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
+    "V_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
     "TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE_PT1H",
     "TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE_PT3H",
     "LOW_CLOUD_COVER__GROUND_OR_WATER_SURFACE",
     "PRESSURE__MEAN_SEA_LEVEL",
-    "GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE",
+    "GEOPOTENTIAL__ISOBARIC_SURFACE",  # not a surface orography
 ]
 
 
@@ -214,21 +215,23 @@ def test_parse_capabilities_and_time_axis():
 def test_resolve_prefers_pt1h_and_reports_unresolved():
     res = resolve(parse_capabilities(capabilities_xml()), RUN)
     assert res.intervals["precip"] == "PT1H"
-    assert res.intervals["gust10"] == "PT1H"
-    assert res.indicators["orog"] == "GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE"
+    assert res.intervals["gust_u10"] is None
+    assert res.indicators["gust_v10"].startswith("V_COMPONENT_OF_WIND_GUST")
     assert res.unresolved == ["snow"]  # not in the simulated capabilities
     assert res.steps_seconds == default_steps(RUN)
     assert "snow" not in {s.name for s, _ in res.variables()}
 
 
 def test_resolve_falls_back_to_second_candidate_and_cumulative_precip():
-    available = [a for a in AVAILABLE if not a.startswith(("WIND_SPEED", "TOTAL_PRECIP"))]
+    available = [
+        a for a in AVAILABLE if not a.startswith(("U_COMPONENT_OF_WIND_G", "TOTAL_PRECIP"))
+    ]
     available += [
-        "WIND_SPEED_MAXIMUM_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
+        "U_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND_PT1H",
         "TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE",
     ]
     res = resolve(parse_capabilities(capabilities_xml(available=available)), RUN)
-    assert res.indicators["gust10"].startswith("WIND_SPEED_MAXIMUM_GUST")
+    assert res.intervals["gust_u10"] == "PT1H"
     assert res.intervals["precip"] is None
 
 
@@ -260,11 +263,12 @@ def test_full_run_call_count_matches_budget_estimate():
     res = offline_resolution(RUN)
     plan = build_plan(res)
     n_inst = sum(1 for v in AROME_PE_VARIABLES if v.kind == "instant")  # 6
-    n_acc = sum(1 for v in AROME_PE_VARIABLES if v.kind in ("accum", "max"))  # 3
+    n_acc = sum(1 for v in AROME_PE_VARIABLES if v.kind in ("accum", "max"))  # 4
+    assert (n_inst, n_acc) == (6, 4)
     assert len(plan.fields) == 25 * (n_inst * 52 + n_acc * 51)
-    assert len(plan.static) == 1
-    assert len(plan) == 11_626
-    assert len(build_plan(offline_resolution(RUN.replace(hour=3)))) == 25 * (6 * 46 + 3 * 45) + 1
+    assert plan.static == []  # no orography in the AROME-PE WCS
+    assert len(plan) == 12_900
+    assert len(build_plan(offline_resolution(RUN.replace(hour=3)))) == 25 * (6 * 46 + 4 * 45)
     # Member-major: member 0 comes entirely first, so a partial run is usable.
     first_m1 = next(i for i, r in enumerate(plan.fields) if r.member == 1)
     assert all(r.member == 0 for r in plan.fields[:first_m1])
@@ -277,8 +281,7 @@ def test_plan_no_lead_zero_for_accumulations_and_maxima():
         by_var.setdefault(r.variable.name, []).append(r.step_seconds)
     assert by_var["t2m"] == [0, 3600, 7200]
     assert by_var["precip"] == [3600, 7200]
-    assert by_var["gust10"] == [3600, 7200]
-    assert plan.static[0].variable.name == "orog" and plan.static[0].member == 0
+    assert by_var["gust_u10"] == [3600, 7200]
 
 
 def test_requests_are_unit_calls_with_height_and_interval():
@@ -378,7 +381,7 @@ def test_download_refuses_plan_over_budget(tmp_path):
 
 def test_circuit_breaker_stops_after_a_mostly_missing_member(tmp_path):
     # Every field of every member is missing (e.g. run withdrawn): only member 0 is tried.
-    wcs = FakeWcs(missing=lambda r: "GEOMETRIC" not in str(r.url))
+    wcs = FakeWcs(missing=lambda r: True)
     plan = build_plan(offline_resolution(RUN), members=[0, 1, 2], max_lead_hours=3)
     rep = download_run(make_client(wcs), plan, RawStore(tmp_path), workers=2)
     assert not rep.ok and "membre 0" in rep.aborted
@@ -412,7 +415,7 @@ def stage_run(tmp_path, res: Resolution, members, max_lead):
     return run_dir
 
 
-def test_convert_run_layout_units_and_static_orography(tmp_path):
+def test_convert_run_layout_units_and_attributes(tmp_path):
     res = resolve(parse_capabilities(capabilities_xml()), RUN)
     run_dir = stage_run(tmp_path, res, [0, 1], 3)
     out = convert_run(run_dir, tmp_path / "zarr", decoder=fake_decoder, bbox=None)
@@ -430,9 +433,8 @@ def test_convert_run_layout_units_and_static_orography(tmp_path):
     assert np.isnan(tp[:, 0]).all()
     assert tp[0, 3, 0, 0] == pytest.approx(3.0)
     assert tp.attrs["interval"] == "PT1H"
-    orog = root["surface/orog"]
-    assert orog.shape == (8, 12)
-    assert orog.metadata.dimension_names == ("lat", "lon")
+    assert root["surface/gust_u10"].attrs["kind"] == "max"
+    assert "orog" not in root["surface"]
     assert list(root["surface/time"][:]) == [0, 3600, 7200, 10800]
     latest = json.loads((tmp_path / "zarr" / "latest.json").read_text())
     assert latest["path"] == "20261127T09Z.zarr"
@@ -464,7 +466,7 @@ def test_cli_offline_plan_makes_no_call(capsys, monkeypatch):
     monkeypatch.setattr(httpx.Client, "send", boom)
     assert arome_pe.main(["plan", "--offline", "--run", "20261127T09Z"]) == 0
     out = capsys.readouterr().out
-    assert "11626 appels" in out
+    assert "12900 appels" in out
 
 
 def test_decode_canonical_eccodes_converts_kelvin():

@@ -10,9 +10,9 @@ Pipeline for one run:
 1. ``GetCapabilities`` on member 0 (1 call) lists the coverage ids. Each canonical
    variable is resolved to the first of its candidate indicators that exists for
    the run, with a preferred accumulation interval. Indicator names are not
-   documented publicly: the candidates below are educated guesses, except
-   ``TEMPERATURE__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND`` (seen by probing). An
-   unresolved optional variable is skipped and reported, never guessed.
+   documented publicly: the candidates below come from
+   the indicators listed by GetCapabilities on 2026-11-27. An unresolved
+   optional variable is skipped and reported, never guessed.
 2. ``DescribeCoverage`` of t2m on member 0 (1 call) gives the time axis. Without
    it, the lead time defaults to 51 h for 09z/21z and 45 h for 03z/15z.
 3. Two canary calls (t2m at the last lead time, first and last member) check
@@ -22,8 +22,8 @@ Pipeline for one run:
    and a call budget is checked before starting.
 5. Conversion to Zarr via ``zarr_writer.write_run``: units normalised from the
    GRIB ``units`` key (K -> °C, Pa -> hPa, fraction -> %, kg m-2 -> mm),
-   accumulations since run start converted to amounts per step, orography
-   stored once as a 2D (lat, lon) array.
+   accumulations since run start converted to amounts per step, static
+   fields (none for AROME-PE today) stored as 2D (lat, lon) arrays.
 
 Resumption: raw GRIBs are staged under ``$RAW_DIR/arome-pe/<run>/`` with the
 resolution (indicators, intervals, steps) in ``resolution.json``. A rerun skips
@@ -109,7 +109,8 @@ class PeVariable:
     description: str = ""
 
 
-# Canonical names follow the AROME 0.01° chain (t2m, r2, u10, v10, lcc, mslp, orog).
+# Names checked against GetCapabilities on 2026-11-27 (run 09z). Canonical names follow
+# the AROME 0.01° chain (t2m, r2, u10, v10, gust_u10, gust_v10, lcc, mslp).
 AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
     PeVariable(
         "t2m",
@@ -143,16 +144,22 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         description="10 m northward wind",
     ),
     PeVariable(
-        "gust10",
-        (
-            "WIND_SPEED_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
-            "WIND_SPEED_MAXIMUM_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
-        ),
+        "gust_u10",
+        ("U_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",),
         "m s-1",
         kind="max",
         height=10,
-        intervals=("PT1H", None),
-        description="10 m gust speed, max over the past step",
+        intervals=(None, "PT1H"),
+        description="10 m eastward gust component, max over the past step",
+    ),
+    PeVariable(
+        "gust_v10",
+        ("V_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",),
+        "m s-1",
+        kind="max",
+        height=10,
+        intervals=(None, "PT1H"),
+        description="10 m northward gust component, max over the past step",
     ),
     PeVariable(
         "precip",
@@ -165,10 +172,7 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
     ),
     PeVariable(
         "snow",
-        (
-            "TOTAL_SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE",
-            "SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE",
-        ),
+        ("TOTAL_SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE",),
         "mm",
         kind="accum",
         intervals=("PT1H", None),
@@ -187,17 +191,10 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         "hPa",
         description="mean sea level pressure",
     ),
-    PeVariable(
-        "orog",
-        (
-            "GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE",
-            "GEOPOTENTIAL__GROUND_OR_WATER_SURFACE",
-        ),
-        "m",
-        kind="static",
-        description="model orography, fetched once (member 0)",
-    ),
 )
+# No orography indicator in the AROME-PE WCS (GetCapabilities of 2026-11-27): the
+# ``static`` kind is kept for a future source, see docs/ingestion-arome-pe.md.
+
 VARIABLES_BY_NAME = {v.name: v for v in AROME_PE_VARIABLES}
 
 
@@ -635,7 +632,7 @@ def download_run(
     store: RawStore,
     *,
     workers: int = 2,
-    budget: int = 13_000,
+    budget: int = 14_000,
     max_missing_ratio: float = 0.2,
 ) -> FetchReport:
     """Stage every field of ``plan``, member by member, with budget and circuit breaker."""
@@ -828,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-lead", type=int, help="last lead time in hours (tests)")
     ap.add_argument("--rate", type=float, default=5.0, help="requests per second (default 5)")
     ap.add_argument("--workers", type=int, default=2)
-    ap.add_argument("--budget", type=int, default=13_000, help="max calls for one fetch")
+    ap.add_argument("--budget", type=int, default=14_000, help="max calls for one fetch")
     ap.add_argument("--offline", action="store_true", help="plan without any call")
     ap.add_argument("--keep", type=int, help="runs to keep after convert")
     ap.add_argument(
