@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest        # machine virtuelle fournie par GitHub
     steps:
       - uses: actions/checkout@v4          # récupère le code
-      - uses: actions/setup-python@v5      # installe Python
+      - uses: actions/setup-python@v7      # installe Python
         with:
           python-version: "3.12"
       - run: pip install ruff pytest httpx numpy zarr eccodes fastapi
