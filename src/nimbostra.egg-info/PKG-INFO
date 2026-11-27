@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: nimbostra
+Version: 0.1.0
+Requires-Python: >=3.12
+License-File: LICENSE
+Requires-Dist: httpx>=0.27
+Requires-Dist: numpy>=2.0
+Requires-Dist: zarr>=3.0
+Requires-Dist: eccodes>=2.37
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn>=0.30
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Provides-Extra: dem
+Requires-Dist: tifffile; extra == "dem"
+Requires-Dist: imagecodecs; extra == "dem"
+Dynamic: license-file
