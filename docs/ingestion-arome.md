@@ -96,12 +96,12 @@ puis `$DATA_DIR/arome/latest.json` qui désigne le run à lire.
 | t2m | 2t | °C | |
 | r2 | 2r | % | |
 | u10, v10 | 10u, 10v | m/s | |
-| gust_u10, gust_v10 | 10efg, 10nfg | m/s | maximum sur le pas, absent à l'échéance 0 |
+| gust_u10, gust_v10 | max_10efg, max_10nfg (ou 10efg, 10nfg) | m/s | maximum sur le pas, absent à l'échéance 0 |
 | rain, snow, graupel | tirf, tsnowp, tgrp | mm par pas | cumuls depuis le début du run convertis par différence |
 | lcc, mcc, hcc | lcc, mcc, hcc | % | |
 | cape | CAPE_INS ou cape | J/kg | |
 | sp, mslp | sp, prmsl | hPa | mslp seulement s'il est présent |
-| orog | orog, h ou z | m | z divisé par g |
+| orog | h (orog ou z acceptés) | m | z divisé par g |
 
 Les unités sont converties d'après la clé GRIB `units`. Une unité inattendue
 arrête la conversion plutôt que de produire une valeur fausse. L'écriture des

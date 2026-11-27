@@ -77,6 +77,7 @@ class VarSpec:
 
 
 # eccodes 2.50 short names; MF local names (e.g. CAPE_INS) accepted as aliases.
+# Time-maximum gusts come out as ``max_10efg`` / ``max_10nfg`` on real AROME files.
 # Run ``python -m ingest.arome_convert inventory`` on a real run to check them.
 AROME_VARIABLES: tuple[VarSpec, ...] = (
     VarSpec("t2m", ("2t",), "degC", "instant", "heightAboveGround", 2, "2 m temperature"),
@@ -85,7 +86,7 @@ AROME_VARIABLES: tuple[VarSpec, ...] = (
     VarSpec("v10", ("10v",), "m s-1", "instant", "heightAboveGround", 10, "10 m northward wind"),
     VarSpec(
         "gust_u10",
-        ("10efg",),
+        ("10efg", "max_10efg"),
         "m s-1",
         "max",
         "heightAboveGround",
@@ -94,7 +95,7 @@ AROME_VARIABLES: tuple[VarSpec, ...] = (
     ),
     VarSpec(
         "gust_v10",
-        ("10nfg",),
+        ("10nfg", "max_10nfg"),
         "m s-1",
         "max",
         "heightAboveGround",

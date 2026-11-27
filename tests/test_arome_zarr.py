@@ -14,6 +14,8 @@ eccodes = pytest.importorskip("eccodes")
 from ingest.arome_convert import main as cli_main
 from ingest.arome_zarr import (
     AROME_VARIABLES,
+    MessageMeta,
+    _match,
     convert_run,
     convert_units,
     next_run_to_convert,
@@ -229,6 +231,40 @@ def test_every_stored_unit_accepts_its_eccodes_spelling():
     }
     for spec in AROME_VARIABLES:
         convert_units(np.float32([1.0]), eccodes[spec.units], spec.units)
+
+
+# ``arome_convert inventory`` on the real run of 2026-11-27 12z (SP1, SP2, SP3):
+# (shortName, typeOfLevel, level, stepType, units) -> expected variable.
+REAL_INVENTORY = [
+    ("2t", "heightAboveGround", 2, "instant", "K", "t2m"),
+    ("2r", "heightAboveGround", 2, "instant", "%", "r2"),
+    ("10u", "heightAboveGround", 10, "instant", "m s**-1", "u10"),
+    ("10v", "heightAboveGround", 10, "instant", "m s**-1", "v10"),
+    ("max_10efg", "heightAboveGround", 10, "max", "m s**-1", "gust_u10"),
+    ("max_10nfg", "heightAboveGround", 10, "max", "m s**-1", "gust_v10"),
+    ("CAPE_INS", "unknown", 0, "instant", "m**2 s**-2", "cape"),
+    ("d0c16n193", "surface", 0, "instant", "unknown", None),
+    ("tgrp", "surface", 0, "accum", "kg m**-2", "graupel"),
+    ("sp", "surface", 0, "instant", "Pa", "sp"),
+    ("lcc", "surface", 0, "instant", "%", "lcc"),
+    ("hcc", "surface", 0, "instant", "%", "hcc"),
+    ("mcc", "surface", 0, "instant", "%", "mcc"),
+    ("tirf", "surface", 0, "accum", "kg m**-2", "rain"),
+    ("tsnowp", "surface", 0, "accum", "kg m**-2", "snow"),
+    ("d0c5n7", "", 0, "instant", "unknown", None),
+    ("h", "surface", 0, "instant", "m", "orog"),
+]
+
+
+@pytest.mark.parametrize(
+    ("short", "tol", "level", "step_type", "units", "expected"), REAL_INVENTORY
+)
+def test_real_inventory_matches_and_converts(short, tol, level, step_type, units, expected):
+    meta = MessageMeta(short, tol, level, step_type, 1, units)
+    spec = _match(meta, AROME_VARIABLES)
+    assert (spec.name if spec else None) == expected
+    if spec is not None:
+        convert_units(np.float32([1.0]), units, spec.units)
 
 
 # --------------------------------------------------------------------------- conversion
