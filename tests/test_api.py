@@ -98,3 +98,43 @@ def test_no_run_is_503(tmp_path):
 
 def test_openapi_is_served(client):
     assert client.get("/v1/openapi.json").status_code == 200
+
+
+def test_timing_in_body_and_header(client):
+    r = client.get("/v1/forecast/point", params={"lat": 45.2, "lon": 6.2})
+    timing = r.json()["timing"]
+    assert set(timing) == {"read_ms", "derive_ms", "total_ms"}
+    assert all(isinstance(v, float) and v >= 0 for v in timing.values())
+    assert timing["total_ms"] >= timing["read_ms"] + timing["derive_ms"] - 0.2
+    header = r.headers["server-timing"]
+    assert header.startswith("read;dur=") and "derive;dur=" in header and "total;dur=" in header
+
+    raw = client.get("/v1/raw/arome/point", params={"lat": 45.2, "lon": 6.2}).json()
+    assert set(raw["timing"]) == {"read_ms", "total_ms"}
+    assert set(client.get("/v1/models").json()["timing"]) == {"read_ms", "total_ms"}
+
+
+def test_timing_does_not_change_etag(client, monkeypatch):
+    from api import app as app_module
+
+    params = {"lat": 45.2, "lon": 6.2}
+    first = client.get("/v1/raw/arome/point", params=params)
+    monkeypatch.setattr(app_module.Timer, "as_json", lambda self: {"total_ms": 9999.0})
+    second = client.get("/v1/raw/arome/point", params=params)
+    assert second.json()["timing"] != first.json()["timing"]
+    assert second.headers["etag"] == first.headers["etag"]
+
+
+def test_304_skips_the_read(client, monkeypatch):
+    from api import app as app_module
+
+    params = {"lat": 45.2, "lon": 6.2}
+    etag = client.get("/v1/forecast/point", params=params).headers["etag"]
+
+    def boom(*args, **kwargs):
+        raise AssertionError("read_raw called despite a matching ETag")
+
+    monkeypatch.setattr(app_module, "read_raw", boom)
+    r = client.get("/v1/forecast/point", params=params, headers={"If-None-Match": etag})
+    assert r.status_code == 304 and r.headers["etag"] == etag
+    assert "server-timing" not in r.headers
