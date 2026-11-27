@@ -26,6 +26,7 @@ from ingest.arome_zarr import (
     read_messages_eccodes,
     write_latest,
 )
+from ingest.dotenv import load_dotenv
 from ingest.meteofrance_paquets import RunStage, format_run, staged_runs
 
 logger = logging.getLogger("ingest.arome_convert")
@@ -54,6 +55,7 @@ def inventory(raw_root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()  # before argparse: defaults read RAW_DIR / DATA_DIR
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command", choices=["inventory", "convert"])
     ap.add_argument("--raw", type=Path, default=Path(os.environ.get("RAW_DIR", "data/raw")))

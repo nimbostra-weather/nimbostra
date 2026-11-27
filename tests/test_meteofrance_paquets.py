@@ -399,5 +399,24 @@ def test_prune_rejects_zero():
 def test_cli_requires_credentials(monkeypatch, tmp_path):
     monkeypatch.delenv("METEOFRANCE_APPLICATION_ID", raising=False)
     monkeypatch.delenv("METEOFRANCE_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)  # no .env here or above (tmp dirs)
     with pytest.raises(SystemExit):
         cli_main(["plan", "--root", str(tmp_path)])
+
+
+def test_cli_reads_credentials_from_dotenv_in_parent(monkeypatch, tmp_path):
+    monkeypatch.delenv("METEOFRANCE_APPLICATION_ID", raising=False)
+    monkeypatch.delenv("METEOFRANCE_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("METEOFRANCE_API_KEY=from-file\n")
+    (tmp_path / "src").mkdir()
+    monkeypatch.chdir(tmp_path / "src")  # as documented: commands run from src/
+    seen = {}
+
+    def fake_make_auth(http, env):
+        seen.update(env)
+        raise SystemExit("stop before any HTTP call")
+
+    monkeypatch.setattr("ingest.arome_fetch.make_auth", fake_make_auth)
+    with pytest.raises(SystemExit, match="stop before"):
+        cli_main(["plan", "--root", str(tmp_path)])
+    assert seen["METEOFRANCE_API_KEY"] == "from-file"

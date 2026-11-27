@@ -5,7 +5,8 @@ Usage (from the repository root, with ``src`` on PYTHONPATH):
   python -m ingest.arome_fetch fetch           # download it (no-op if already staged)
   python -m ingest.arome_fetch fetch --keep 2  # then keep only the 2 latest staged runs
 
-Credentials come from the environment, never from the repository:
+Credentials come from the environment or from a ``.env`` file in the current
+directory or a parent (see ``.env.example``), never from the repository:
 ``METEOFRANCE_APPLICATION_ID`` (OAuth token, renewed automatically) or else
 ``METEOFRANCE_API_KEY`` (sent in the ``apikey`` header, as in the spike).
 Exit status: 0 complete or nothing new, 1 incomplete or failed download, 2 configuration.
@@ -21,6 +22,7 @@ from pathlib import Path
 
 import httpx
 
+from ingest.dotenv import load_dotenv
 from ingest.meteofrance_paquets import (
     MODELS,
     PaquetsAuthError,
@@ -43,6 +45,7 @@ def make_auth(http: httpx.Client, env: dict[str, str]) -> Auth:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()  # before argparse: defaults read RAW_DIR / DATA_DIR
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("command", choices=["plan", "fetch"])
     ap.add_argument("--model", default="arome", choices=sorted(MODELS))

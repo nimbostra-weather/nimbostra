@@ -48,7 +48,10 @@ $RAW_DIR/arome/20261127T06Z/SP1/00H.grib2
 
 ## Utilisation
 
-Identifiants dans l'environnement (jamais dans le dépôt) :
+Identifiants dans l'environnement ou dans un fichier `.env` placé dans le
+dossier courant ou un dossier parent, par exemple à la racine du dépôt
+(jamais committé). Une variable déjà définie dans l'environnement l'emporte
+sur le fichier. Variables :
 `METEOFRANCE_APPLICATION_ID` (jeton renouvelé automatiquement) ou, à défaut,
 `METEOFRANCE_API_KEY` (en-tête `apikey`, comme dans le spike).
 
