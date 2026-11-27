@@ -52,17 +52,33 @@ Une variable facultative introuvable est ignorée et notée dans l'attribut
 - Rafales : seulement en composantes U et V, comme AROME déterministe ;
   la vitesse se calcule à la lecture.
 - Orographie : **aucun indicateur** dans le WCS AROME-PE (le géopotentiel
-  n'existe qu'en niveaux pression). Elle viendra d'une autre source, à
-  décider (voir ci-dessous). Le code sait déjà écrire un champ statique
-  `(lat, lon)`.
+  n'existe qu'en niveaux pression). Elle vient du fichier des champs
+  constants de la grille, voir ci-dessous.
 
-## Orographie : sources possibles
+## Orographie et masque terre-mer
 
-1. Paquet AROME 0,025° de l'API Paquets (même grille 0,025° France), un
-   seul fichier statique. Mais c'est le relief d'AROME 1,3 km agrégé, pas
-   celui d'AROME-PE à 2,5 km : à vérifier.
-2. MNT Copernicus GLO-90 moyenné sur les mailles 0,025° : déjà prévu pour
-   la correction d'altitude, mais ce n'est pas le relief du modèle.
+Source : `constant-eurw1s40.grib2`, fichier Météo-France des champs
+constants de la grille EURW1S40 (0,025°, 1121 × 717 points, 37,5–55,4 N,
+12 W–16 E), fourni par Lionel le 2026-11-27. Licence Ouverte Etalab 2.0,
+mention « Météo-France ».
+
+- Deux messages : `h` (hauteur géométrique, m) et `lsm` (masque
+  terre-mer, fraction, stocké en %).
+- Recadré sur France + ~100 km, il donne exactement la grille du WCS
+  (461 × 681 points, 40,5–52 N, 6,5 W–10,5 E) ; la conversion refuse un
+  champ dont la grille diffère.
+- Valeurs vérifiées : 4 119 m au plus haut (massif du Mont-Blanc),
+  48 m à Paris, 0 en mer, -133 m au plus bas, vers 50,9 N 6,5 E, ce qui
+  correspond aux mines de lignite à ciel ouvert de Rhénanie.
+- **À confirmer** : un relief aussi fin (4 119 m) ressemble davantage au
+  relief commun des produits 0,025° qu'au relief lissé d'un modèle à
+  2,5 km. Pour la correction d'altitude, l'écart reste faible devant
+  celui du MNT.
+
+Emplacement sur le serveur (jamais dans le dépôt) :
+`$DATA_DIR/static/arome-pe/constant-eurw1s40.grib2`, ou le chemin donné
+par `AROME_PE_CONSTANTS` ou `--constants`. Sans ce fichier, la conversion
+fonctionne mais le Zarr n'a ni `orog` ni `lsm`.
 
 ## Coût d'un run
 
@@ -110,5 +126,5 @@ python -m ingest.arome_pe convert --keep 2
 
 Sortie : `$DATA_DIR/arome-pe/20261127T09Z.zarr` (groupe `surface`,
 dimensions `member, time, lat, lon`, chunks tous membres × toutes
-échéances × 8 × 8 points), puis `latest.json`.
+échéances × 8 × 8 points ; `orog` et `lsm` en `lat, lon`), puis `latest.json`.
 Mémoire : environ 1,6 Go par variable pendant la conversion.

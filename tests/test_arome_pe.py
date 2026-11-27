@@ -490,3 +490,60 @@ def test_decode_canonical_eccodes_converts_kelvin():
     f = arome_pe.decode_canonical_eccodes(msg)
     # North row first in the GRIB, ascending latitudes after decoding.
     np.testing.assert_allclose(f.values, [[20.0, 30.0], [0.0, 10.0]], atol=1e-3)
+
+
+def _real_grib(short_name: str, values: np.ndarray) -> bytes:
+    eccodes = pytest.importorskip("eccodes")
+    gid = eccodes.codes_grib_new_from_samples("regular_ll_sfc_grib2")
+    try:
+        eccodes.codes_set(gid, "Ni", LONS.size)
+        eccodes.codes_set(gid, "Nj", LATS.size)
+        eccodes.codes_set_double(gid, "latitudeOfFirstGridPointInDegrees", LATS[-1])
+        eccodes.codes_set_double(gid, "latitudeOfLastGridPointInDegrees", LATS[0])
+        eccodes.codes_set_double(gid, "longitudeOfFirstGridPointInDegrees", LONS[0])
+        eccodes.codes_set_double(gid, "longitudeOfLastGridPointInDegrees", LONS[-1])
+        eccodes.codes_set_double(gid, "iDirectionIncrementInDegrees", 0.25)
+        eccodes.codes_set_double(gid, "jDirectionIncrementInDegrees", 0.25)
+        eccodes.codes_set(gid, "shortName", short_name)
+        eccodes.codes_set_values(gid, values[::-1].ravel())  # north row first
+        return eccodes.codes_get_message(gid)
+    finally:
+        eccodes.codes_release(gid)
+
+
+def test_convert_adds_orography_and_land_sea_mask_from_constants_file(tmp_path):
+    shape = (LATS.size, LONS.size)
+    orog = np.arange(LATS.size * LONS.size, dtype=float).reshape(shape)
+    constants = tmp_path / "constant-eurw1s40.grib2"
+    constants.write_bytes(_real_grib("h", orog) + _real_grib("lsm", np.full(shape, 0.5)))
+
+    res = resolve(parse_capabilities(capabilities_xml()), RUN)
+    run_dir = stage_run(tmp_path, res, [0], 1)
+
+    def decoder(data: bytes) -> DecodedField:
+        if data[4:10] == b"\x93NUMPY":  # simulated WCS field
+            return fake_decoder(data)
+        return arome_pe.decode_canonical_eccodes(data)
+
+    out = convert_run(
+        run_dir, tmp_path / "zarr", decoder=decoder, bbox=None, constants_file=constants
+    )
+    surf = zarr.open_group(str(out), mode="r")["surface"]
+    np.testing.assert_allclose(surf["orog"][:], orog, atol=0.5)
+    assert surf["orog"].attrs["units"] == "m"
+    assert surf["orog"].attrs["source"].startswith("Météo-France")
+    assert surf["lsm"][0, 0] == pytest.approx(50.0)  # fraction -> %
+    assert surf["orog"].metadata.dimension_names == ("lat", "lon")
+
+
+def test_convert_without_constants_file_still_works(tmp_path):
+    res = resolve(parse_capabilities(capabilities_xml()), RUN)
+    run_dir = stage_run(tmp_path, res, [0], 1)
+    out = convert_run(
+        run_dir,
+        tmp_path / "zarr",
+        decoder=fake_decoder,
+        bbox=None,
+        constants_file=tmp_path / "absent.grib2",
+    )
+    assert "orog" not in zarr.open_group(str(out), mode="r")["surface"]

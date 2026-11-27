@@ -192,8 +192,8 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         description="mean sea level pressure",
     ),
 )
-# No orography indicator in the AROME-PE WCS (GetCapabilities of 2026-11-27): the
-# ``static`` kind is kept for a future source, see docs/ingestion-arome-pe.md.
+# No orography indicator in the AROME-PE WCS (GetCapabilities of 2026-11-27): static
+# fields come from the constant-fields file of the 0.025° grid (see CONSTANTS).
 
 VARIABLES_BY_NAME = {v.name: v for v in AROME_PE_VARIABLES}
 
@@ -683,7 +683,9 @@ def _is_auth_failure(message: str) -> bool:
 
 def make_transform(resolution: Resolution):
     def transform(var: Variable, data: np.ndarray, steps: list[int]) -> np.ndarray:
-        spec = VARIABLES_BY_NAME[var.name]
+        spec = VARIABLES_BY_NAME.get(var.name)
+        if spec is None:  # constant fields (orography, land-sea mask)
+            return data
         if spec.kind == "accum" and var.interval is None:
             return deaccumulate(data, steps)
         if spec.kind == "accum" and var.interval not in ("PT1H",):
@@ -695,6 +697,69 @@ def make_transform(resolution: Resolution):
     return transform
 
 
+@dataclass(frozen=True)
+class ConstantSpec:
+    """A static field taken from the grid's constant-fields GRIB file."""
+
+    name: str
+    short_names: tuple[str, ...]
+    units: str
+    description: str
+
+
+# File ``constant-eurw1s40.grib2`` (grid EURW1S40, 0.025°, 1121 x 717 points,
+# 37.5..55.4 N, 12 W..16 E), checked on 2026-11-27: messages ``h`` (m) and ``lsm``.
+CONSTANTS_FILE = "constant-eurw1s40.grib2"
+CONSTANTS: tuple[ConstantSpec, ...] = (
+    ConstantSpec("orog", ("h", "orog"), "m", "model orography (geometrical height)"),
+    ConstantSpec("lsm", ("lsm",), "%", "land-sea mask"),
+)
+CONSTANTS_SOURCE = "Météo-France, champs constants de la grille EURW1S40 (0,025°)"
+
+
+def iter_grib_messages(path: Path):
+    """Yield (shortName, raw message bytes) for every message of a GRIB file."""
+    import eccodes  # local import: heavy native dependency
+
+    with open(path, "rb") as fh:
+        while True:
+            gid = eccodes.codes_grib_new_from_file(fh)
+            if gid is None:
+                return
+            try:
+                yield str(eccodes.codes_get(gid, "shortName")), eccodes.codes_get_message(gid)
+            finally:
+                eccodes.codes_release(gid)
+
+
+def stage_constants(
+    constants_file: Path, run: datetime, store: RawStore, reader=iter_grib_messages
+) -> list[CoverageRequest]:
+    """Copy the wanted constant fields into the run's staging area as static requests.
+
+    The grid is checked later, by ``write_run``, against the run's fields.
+    """
+    messages = dict(reader(constants_file))
+    requests = []
+    for spec in CONSTANTS:
+        short = next((s for s in spec.short_names if s in messages), None)
+        if short is None:
+            logger.warning("%s: no %s in %s", spec.name, spec.short_names, constants_file)
+            continue
+        var = Variable(spec.name, f"{constants_file.name}:{short}")
+        req = CoverageRequest(MODEL, run, 0, var, 0)
+        store.write(req, messages[short])
+        requests.append(req)
+    return requests
+
+
+def default_constants_file() -> Path:
+    env = os.environ.get("AROME_PE_CONSTANTS")
+    if env:
+        return Path(env)
+    return Path(os.environ.get("DATA_DIR", "data/zarr")) / "static" / MODEL.name / CONSTANTS_FILE
+
+
 def convert_run(
     raw_run_dir: Path,
     out_dir: Path,
@@ -702,12 +767,19 @@ def convert_run(
     decoder=decode_canonical_eccodes,
     bbox: BBox | None = FRANCE_BBOX,
     keep: int | None = None,
+    constants_file: Path | None = None,
+    constants_reader=iter_grib_messages,
 ) -> Path:
     text = (raw_run_dir / RESOLUTION_FILE).read_text()
     resolution = Resolution.from_json(text)
     meta = json.loads(text)
     plan = build_plan(resolution, meta.get("members"), meta.get("max_lead_hours"))
     store = RawStore(raw_run_dir)
+    static = list(plan.static)
+    if constants_file is not None and constants_file.exists():
+        static += stage_constants(constants_file, resolution.run, store, constants_reader)
+    elif constants_file is not None:
+        logger.warning("constant fields file %s not found: no orography", constants_file)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{run_tag(resolution.run)}.zarr"
     var_attrs = {
@@ -719,6 +791,13 @@ def convert_run(
         }
         for s, v in resolution.variables()
     }
+    for c in CONSTANTS:
+        var_attrs[c.name] = {
+            "units": c.units,
+            "description": c.description,
+            "kind": "static",
+            "source": CONSTANTS_SOURCE,
+        }
     report = write_run(
         out,
         plan.fields,
@@ -731,7 +810,7 @@ def convert_run(
             "unresolved": resolution.unresolved,
         },
         transform=make_transform(resolution),
-        static=plan.static,
+        static=static,
         var_attrs=var_attrs,
     )
     logger.info("%s: %d fields, %d missing", out, report.fields, report.missing)
@@ -829,6 +908,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--offline", action="store_true", help="plan without any call")
     ap.add_argument("--keep", type=int, help="runs to keep after convert")
     ap.add_argument(
+        "--constants",
+        type=Path,
+        default=default_constants_file(),
+        help="constant-fields GRIB of the 0.025° grid (orography, land-sea mask); "
+        "default $AROME_PE_CONSTANTS or $DATA_DIR/static/arome-pe/" + CONSTANTS_FILE,
+    )
+    ap.add_argument(
         "--raw", type=Path, default=Path(os.environ.get("RAW_DIR", "data/raw")) / MODEL.name
     )
     ap.add_argument(
@@ -855,7 +941,7 @@ def main(argv: list[str] | None = None) -> int:
         if not runs:
             print("aucun run en attente", file=sys.stderr)
             return 1
-        print(convert_run(runs[-1], args.out, keep=args.keep))
+        print(convert_run(runs[-1], args.out, keep=args.keep, constants_file=args.constants))
         return 0
 
     try:
