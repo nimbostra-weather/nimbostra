@@ -58,12 +58,13 @@ AVAILABLE = [
     "RELATIVE_HUMIDITY__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
     "U_COMPONENT_OF_WIND__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
     "V_COMPONENT_OF_WIND__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
-    "WIND_SPEED_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND_PT1H",
+    "U_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
+    "V_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
     "TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE_PT1H",
     "TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE_PT3H",
     "LOW_CLOUD_COVER__GROUND_OR_WATER_SURFACE",
     "PRESSURE__MEAN_SEA_LEVEL",
-    "GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE",
+    "GEOPOTENTIAL__ISOBARIC_SURFACE",  # not a surface orography
 ]
 
 
@@ -214,21 +215,23 @@ def test_parse_capabilities_and_time_axis():
 def test_resolve_prefers_pt1h_and_reports_unresolved():
     res = resolve(parse_capabilities(capabilities_xml()), RUN)
     assert res.intervals["precip"] == "PT1H"
-    assert res.intervals["gust10"] == "PT1H"
-    assert res.indicators["orog"] == "GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE"
+    assert res.intervals["gust_u10"] is None
+    assert res.indicators["gust_v10"].startswith("V_COMPONENT_OF_WIND_GUST")
     assert res.unresolved == ["snow"]  # not in the simulated capabilities
     assert res.steps_seconds == default_steps(RUN)
     assert "snow" not in {s.name for s, _ in res.variables()}
 
 
 def test_resolve_falls_back_to_second_candidate_and_cumulative_precip():
-    available = [a for a in AVAILABLE if not a.startswith(("WIND_SPEED", "TOTAL_PRECIP"))]
+    available = [
+        a for a in AVAILABLE if not a.startswith(("U_COMPONENT_OF_WIND_G", "TOTAL_PRECIP"))
+    ]
     available += [
-        "WIND_SPEED_MAXIMUM_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
+        "U_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND_PT1H",
         "TOTAL_PRECIPITATION__GROUND_OR_WATER_SURFACE",
     ]
     res = resolve(parse_capabilities(capabilities_xml(available=available)), RUN)
-    assert res.indicators["gust10"].startswith("WIND_SPEED_MAXIMUM_GUST")
+    assert res.intervals["gust_u10"] == "PT1H"
     assert res.intervals["precip"] is None
 
 
@@ -260,11 +263,13 @@ def test_full_run_call_count_matches_budget_estimate():
     res = offline_resolution(RUN)
     plan = build_plan(res)
     n_inst = sum(1 for v in AROME_PE_VARIABLES if v.kind == "instant")  # 6
-    n_acc = sum(1 for v in AROME_PE_VARIABLES if v.kind in ("accum", "max"))  # 3
-    assert len(plan.fields) == 25 * (n_inst * 52 + n_acc * 51)
-    assert len(plan.static) == 1
-    assert len(plan) == 11_626
-    assert len(build_plan(offline_resolution(RUN.replace(hour=3)))) == 25 * (6 * 46 + 3 * 45) + 1
+    n_acc = sum(1 for v in AROME_PE_VARIABLES if v.kind in ("accum", "max"))  # 4
+    assert (n_inst, n_acc) == (6, 4)
+    # lcc has no field at lead time 0 (404 seen on 2026-11-27).
+    assert len(plan.fields) == 25 * (n_inst * 52 + n_acc * 51 - 1)
+    assert plan.static == []  # no orography in the AROME-PE WCS
+    assert len(plan) == 12_875
+    assert len(build_plan(offline_resolution(RUN.replace(hour=3)))) == 25 * (6 * 46 + 4 * 45 - 1)
     # Member-major: member 0 comes entirely first, so a partial run is usable.
     first_m1 = next(i for i, r in enumerate(plan.fields) if r.member == 1)
     assert all(r.member == 0 for r in plan.fields[:first_m1])
@@ -277,8 +282,8 @@ def test_plan_no_lead_zero_for_accumulations_and_maxima():
         by_var.setdefault(r.variable.name, []).append(r.step_seconds)
     assert by_var["t2m"] == [0, 3600, 7200]
     assert by_var["precip"] == [3600, 7200]
-    assert by_var["gust10"] == [3600, 7200]
-    assert plan.static[0].variable.name == "orog" and plan.static[0].member == 0
+    assert by_var["gust_u10"] == [3600, 7200]
+    assert by_var["lcc"] == [3600, 7200]
 
 
 def test_requests_are_unit_calls_with_height_and_interval():
@@ -378,7 +383,7 @@ def test_download_refuses_plan_over_budget(tmp_path):
 
 def test_circuit_breaker_stops_after_a_mostly_missing_member(tmp_path):
     # Every field of every member is missing (e.g. run withdrawn): only member 0 is tried.
-    wcs = FakeWcs(missing=lambda r: "GEOMETRIC" not in str(r.url))
+    wcs = FakeWcs(missing=lambda r: True)
     plan = build_plan(offline_resolution(RUN), members=[0, 1, 2], max_lead_hours=3)
     rep = download_run(make_client(wcs), plan, RawStore(tmp_path), workers=2)
     assert not rep.ok and "membre 0" in rep.aborted
@@ -412,7 +417,7 @@ def stage_run(tmp_path, res: Resolution, members, max_lead):
     return run_dir
 
 
-def test_convert_run_layout_units_and_static_orography(tmp_path):
+def test_convert_run_layout_units_and_attributes(tmp_path):
     res = resolve(parse_capabilities(capabilities_xml()), RUN)
     run_dir = stage_run(tmp_path, res, [0, 1], 3)
     out = convert_run(run_dir, tmp_path / "zarr", decoder=fake_decoder, bbox=None)
@@ -430,9 +435,8 @@ def test_convert_run_layout_units_and_static_orography(tmp_path):
     assert np.isnan(tp[:, 0]).all()
     assert tp[0, 3, 0, 0] == pytest.approx(3.0)
     assert tp.attrs["interval"] == "PT1H"
-    orog = root["surface/orog"]
-    assert orog.shape == (8, 12)
-    assert orog.metadata.dimension_names == ("lat", "lon")
+    assert root["surface/gust_u10"].attrs["kind"] == "max"
+    assert "orog" not in root["surface"]
     assert list(root["surface/time"][:]) == [0, 3600, 7200, 10800]
     latest = json.loads((tmp_path / "zarr" / "latest.json").read_text())
     assert latest["path"] == "20261127T09Z.zarr"
@@ -464,7 +468,7 @@ def test_cli_offline_plan_makes_no_call(capsys, monkeypatch):
     monkeypatch.setattr(httpx.Client, "send", boom)
     assert arome_pe.main(["plan", "--offline", "--run", "20261127T09Z"]) == 0
     out = capsys.readouterr().out
-    assert "11626 appels" in out
+    assert "12875 appels" in out
 
 
 def test_decode_canonical_eccodes_converts_kelvin():
@@ -488,3 +492,124 @@ def test_decode_canonical_eccodes_converts_kelvin():
     f = arome_pe.decode_canonical_eccodes(msg)
     # North row first in the GRIB, ascending latitudes after decoding.
     np.testing.assert_allclose(f.values, [[20.0, 30.0], [0.0, 10.0]], atol=1e-3)
+
+
+def _real_grib(short_name: str, values: np.ndarray) -> bytes:
+    eccodes = pytest.importorskip("eccodes")
+    gid = eccodes.codes_grib_new_from_samples("regular_ll_sfc_grib2")
+    try:
+        eccodes.codes_set(gid, "Ni", LONS.size)
+        eccodes.codes_set(gid, "Nj", LATS.size)
+        eccodes.codes_set_double(gid, "latitudeOfFirstGridPointInDegrees", LATS[-1])
+        eccodes.codes_set_double(gid, "latitudeOfLastGridPointInDegrees", LATS[0])
+        eccodes.codes_set_double(gid, "longitudeOfFirstGridPointInDegrees", LONS[0])
+        eccodes.codes_set_double(gid, "longitudeOfLastGridPointInDegrees", LONS[-1])
+        eccodes.codes_set_double(gid, "iDirectionIncrementInDegrees", 0.25)
+        eccodes.codes_set_double(gid, "jDirectionIncrementInDegrees", 0.25)
+        eccodes.codes_set(gid, "shortName", short_name)
+        eccodes.codes_set_values(gid, values[::-1].ravel())  # north row first
+        return eccodes.codes_get_message(gid)
+    finally:
+        eccodes.codes_release(gid)
+
+
+def test_convert_adds_orography_and_land_sea_mask_from_constants_file(tmp_path):
+    shape = (LATS.size, LONS.size)
+    orog = np.arange(LATS.size * LONS.size, dtype=float).reshape(shape)
+    constants = tmp_path / "constant-eurw1s40.grib2"
+    constants.write_bytes(_real_grib("h", orog) + _real_grib("lsm", np.full(shape, 0.5)))
+
+    res = resolve(parse_capabilities(capabilities_xml()), RUN)
+    run_dir = stage_run(tmp_path, res, [0], 1)
+
+    def decoder(data: bytes) -> DecodedField:
+        if data[4:10] == b"\x93NUMPY":  # simulated WCS field
+            return fake_decoder(data)
+        return arome_pe.decode_canonical_eccodes(data)
+
+    out = convert_run(
+        run_dir, tmp_path / "zarr", decoder=decoder, bbox=None, constants_file=constants
+    )
+    surf = zarr.open_group(str(out), mode="r")["surface"]
+    np.testing.assert_allclose(surf["orog"][:], orog, atol=0.5)
+    assert surf["orog"].attrs["units"] == "m"
+    assert surf["orog"].attrs["source"].startswith("Météo-France")
+    assert surf["lsm"][0, 0] == pytest.approx(50.0)  # fraction -> %
+    assert surf["orog"].metadata.dimension_names == ("lat", "lon")
+
+
+def test_convert_without_constants_file_still_works(tmp_path):
+    res = resolve(parse_capabilities(capabilities_xml()), RUN)
+    run_dir = stage_run(tmp_path, res, [0], 1)
+    out = convert_run(
+        run_dir,
+        tmp_path / "zarr",
+        decoder=fake_decoder,
+        bbox=None,
+        constants_file=tmp_path / "absent.grib2",
+    )
+    assert "orog" not in zarr.open_group(str(out), mode="r")["surface"]
+
+
+# --------------------------------------------------------------------------- metadata throttling
+
+
+class ThrottledMetadata(FakeWcs):
+    """GetCoverage works, but metadata operations answer 429 (as on 2026-11-27)."""
+
+    def __call__(self, request):
+        if not request.url.path.endswith("GetCoverage"):
+            with self._lock:
+                self.calls.append(request)
+            return httpx.Response(429, text="throttled")
+        return super().__call__(request)
+
+
+def test_metadata_429_backs_off_progressively_then_fails_cleanly():
+    client = make_client(ThrottledMetadata())
+    clock = client.limiter._clock.__self__
+    with pytest.raises(arome_pe.WcsError, match="still throttled"):
+        discover(client)
+    # 10 + 20 + 40 + 80 + 120 s of waiting, not 8 x 5 s.
+    assert clock.now >= 270
+
+
+def test_capabilities_cache_and_stale_fallback(tmp_path):
+    now = [1_000_000.0]
+    cache = arome_pe.MetadataCache(tmp_path, clock=lambda: now[0])
+    wcs = FakeWcs()
+    res = discover(make_client(wcs), cache=cache)
+    assert res.steps_source == "describe"
+    assert wcs.count("GetCapabilities") == 1 and wcs.count("DescribeCoverage") == 1
+
+    # Fresh cache: no call at all, time axis from the per-run-hour cache.
+    import os
+
+    os.utime(tmp_path / "capabilities.xml", (now[0], now[0]))
+    again = FakeWcs()
+    res = discover(make_client(again), cache=cache)
+    assert again.calls == [] and res.steps_source == "cache" and res.run == RUN
+
+    # Older than max_age: asked again; if throttled, the stale copy is used.
+    now[0] += 3600
+    throttled = ThrottledMetadata()
+    res = discover(make_client(throttled), cache=cache)
+    assert res.run == RUN and throttled.count("GetCapabilities") == 6
+
+
+def test_time_axis_failure_falls_back_to_defaults():
+    class DescribeThrottled(FakeWcs):
+        def __call__(self, request):
+            if request.url.path.endswith("DescribeCoverage"):
+                return httpx.Response(429, text="throttled")
+            return super().__call__(request)
+
+    res = discover(make_client(DescribeThrottled()))
+    assert res.steps_source == "default" and res.steps_seconds[-1] == 51 * 3600
+
+
+def test_cli_reports_throttling_without_traceback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("METEOFRANCE_API_KEY", "test-key")
+    monkeypatch.setattr(arome_pe, "_client", lambda args: make_client(ThrottledMetadata()))
+    assert arome_pe.main(["plan", "--raw", str(tmp_path)]) == 1
+    assert "quota" in capsys.readouterr().err

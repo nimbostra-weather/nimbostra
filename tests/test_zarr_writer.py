@@ -154,3 +154,36 @@ def test_decode_grib_eccodes_orientation():
     np.testing.assert_allclose(f.lons, [-1.0, 0.0, 1.0, 2.0])
     assert f.values[0, 0] == pytest.approx(20.0)  # south-west corner
     assert f.values[2, 3] == pytest.approx(3.0)  # north-east corner
+
+
+def test_static_field_and_transform(tmp_path):
+    plan = plan_run(AROME_PE, RUN, [T2M], [3600, 7200], members=[0, 1])
+    orog_var = Variable("orog", "SOME_OROGRAPHY__GROUND_OR_WATER_SURFACE")
+    orog = plan_run(AROME_PE, RUN, [orog_var], [0], members=[0])
+    store = RawStore(tmp_path / "raw")
+    stage(plan + orog, store)
+    seen = []
+
+    def transform(var, data, steps):
+        seen.append((var.name, data.shape, list(steps)))
+        return data + 1
+
+    out = tmp_path / "run.zarr"
+    report = write_run(
+        out,
+        plan,
+        store,
+        decoder=fake_decoder,
+        transform=transform,
+        static=orog,
+        var_attrs={"orog": {"units": "m"}},
+    )
+    assert report.fields == len(plan) + 1
+    root = zarr.open_group(str(out), mode="r")
+    a = root["surface/orog"]
+    assert a.shape == (8, 12) and a.metadata.dimension_names == ("lat", "lon")
+    assert a.attrs["units"] == "m"
+    assert root["surface/t2m"].shape == (2, 2, 8, 12)  # static adds no member or lead time
+    assert root["surface/t2m"][1, 0, 0, 0] == pytest.approx(1001.0 + 1)
+    assert seen[0] == ("t2m", (2, 2, 8, 12), [3600, 7200])
+    assert seen[1] == ("orog", (1, 1, 8, 12), [0])

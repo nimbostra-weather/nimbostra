@@ -10,9 +10,9 @@ Pipeline for one run:
 1. ``GetCapabilities`` on member 0 (1 call) lists the coverage ids. Each canonical
    variable is resolved to the first of its candidate indicators that exists for
    the run, with a preferred accumulation interval. Indicator names are not
-   documented publicly: the candidates below are educated guesses, except
-   ``TEMPERATURE__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND`` (seen by probing). An
-   unresolved optional variable is skipped and reported, never guessed.
+   documented publicly: the candidates below come from
+   the indicators listed by GetCapabilities on 2026-11-27. An unresolved
+   optional variable is skipped and reported, never guessed.
 2. ``DescribeCoverage`` of t2m on member 0 (1 call) gives the time axis. Without
    it, the lead time defaults to 51 h for 09z/21z and 45 h for 03z/15z.
 3. Two canary calls (t2m at the last lead time, first and last member) check
@@ -22,8 +22,8 @@ Pipeline for one run:
    and a call budget is checked before starting.
 5. Conversion to Zarr via ``zarr_writer.write_run``: units normalised from the
    GRIB ``units`` key (K -> °C, Pa -> hPa, fraction -> %, kg m-2 -> mm),
-   accumulations since run start converted to amounts per step, orography
-   stored once as a 2D (lat, lon) array.
+   accumulations since run start converted to amounts per step, static
+   fields (none for AROME-PE today) stored as 2D (lat, lon) arrays.
 
 Resumption: raw GRIBs are staged under ``$RAW_DIR/arome-pe/<run>/`` with the
 resolution (indicators, intervals, steps) in ``resolution.json``. A rerun skips
@@ -107,9 +107,12 @@ class PeVariable:
     intervals: tuple[str | None, ...] = (None,)
     required: bool = False
     description: str = ""
+    # False when the field is not produced at lead time 0 (seen for lcc: 404 at +0 h).
+    lead0: bool = True
 
 
-# Canonical names follow the AROME 0.01° chain (t2m, r2, u10, v10, lcc, mslp, orog).
+# Names checked against GetCapabilities on 2026-11-27 (run 09z). Canonical names follow
+# the AROME 0.01° chain (t2m, r2, u10, v10, gust_u10, gust_v10, lcc, mslp).
 AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
     PeVariable(
         "t2m",
@@ -143,16 +146,22 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         description="10 m northward wind",
     ),
     PeVariable(
-        "gust10",
-        (
-            "WIND_SPEED_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
-            "WIND_SPEED_MAXIMUM_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",
-        ),
+        "gust_u10",
+        ("U_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",),
         "m s-1",
         kind="max",
         height=10,
-        intervals=("PT1H", None),
-        description="10 m gust speed, max over the past step",
+        intervals=(None, "PT1H"),
+        description="10 m eastward gust component, max over the past step",
+    ),
+    PeVariable(
+        "gust_v10",
+        ("V_COMPONENT_OF_WIND_GUST__SPECIFIC_HEIGHT_LEVEL_ABOVE_GROUND",),
+        "m s-1",
+        kind="max",
+        height=10,
+        intervals=(None, "PT1H"),
+        description="10 m northward gust component, max over the past step",
     ),
     PeVariable(
         "precip",
@@ -165,10 +174,7 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
     ),
     PeVariable(
         "snow",
-        (
-            "TOTAL_SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE",
-            "SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE",
-        ),
+        ("TOTAL_SNOW_PRECIPITATION__GROUND_OR_WATER_SURFACE",),
         "mm",
         kind="accum",
         intervals=("PT1H", None),
@@ -180,6 +186,7 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         "%",
         required=True,
         description="low cloud cover (the only cloud field of AROME-PE)",
+        lead0=False,
     ),
     PeVariable(
         "mslp",
@@ -187,17 +194,10 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         "hPa",
         description="mean sea level pressure",
     ),
-    PeVariable(
-        "orog",
-        (
-            "GEOMETRIC_HEIGHT__GROUND_OR_WATER_SURFACE",
-            "GEOPOTENTIAL__GROUND_OR_WATER_SURFACE",
-        ),
-        "m",
-        kind="static",
-        description="model orography, fetched once (member 0)",
-    ),
 )
+# No orography indicator in the AROME-PE WCS (GetCapabilities of 2026-11-27): static
+# fields come from the constant-fields file of the 0.025° grid (see CONSTANTS).
+
 VARIABLES_BY_NAME = {v.name: v for v in AROME_PE_VARIABLES}
 
 
@@ -455,8 +455,8 @@ class RunPlan:
 
 
 def steps_for(spec: PeVariable, steps: Sequence[int]) -> list[int]:
-    """Accumulations and maxima have no field at lead time 0."""
-    if spec.kind in ("accum", "max"):
+    """Accumulations, maxima and some diagnostics (lcc) have no field at lead time 0."""
+    if spec.kind in ("accum", "max") or not spec.lead0:
         return [s for s in steps if s > 0]
     return list(steps)
 
@@ -495,13 +495,24 @@ def estimate(plan: RunPlan, rate_per_second: float, mb_per_field: float = 0.6) -
 # --------------------------------------------------------------------------- metadata calls
 
 
+# Metadata operations are throttled separately from GetCoverage (2026-11-27: 8
+# consecutive 429 on DescribeCoverage over 35 s while GetCoverage calls succeeded).
+# Hence a longer, progressive wait, and a disk cache so that they are rarely needed.
+METADATA_429_DELAYS = (10.0, 20.0, 40.0, 80.0, 120.0)
+
+
 def get_xml(
-    client: WcsClient, operation: str, params: list[tuple[str, str]], member: int = 0
+    client: WcsClient,
+    operation: str,
+    params: list[tuple[str, str]],
+    member: int = 0,
+    delays_429: Sequence[float] = METADATA_429_DELAYS,
 ) -> str:
     """GetCapabilities / DescribeCoverage through the client's auth and rate limiter."""
     url = client.model.service_url(member, operation)
     refreshed = False
-    for attempt in range(client.retry.max_attempts):
+    throttled = 0
+    for attempt in range(client.retry.max_attempts + len(delays_429)):
         client.limiter.acquire()
         headers = client.auth.headers()
         try:
@@ -519,8 +530,12 @@ def get_xml(
             refreshed = True
             continue
         if resp.status_code == 429:
+            if throttled >= len(delays_429):
+                raise WcsError(f"{operation}: still throttled after {throttled + 1} attempts")
             hint = parse_retry_after(resp)
-            wait = min(client.retry.max_delay, max(client.retry.min_429_delay, hint or 0.0))
+            wait = max(delays_429[throttled], hint or 0.0)
+            throttled += 1
+            logger.warning("429 on %s, waiting %.0fs", operation, wait)
             client.limiter.pause(wait)
             continue
         if resp.status_code in (500, 502, 503, 504):
@@ -552,22 +567,117 @@ def fetch_time_axis(client: WcsClient, coverage: str) -> list[int]:
     return parse_time_axis(text)
 
 
-def discover(client: WcsClient, run: datetime | None = None) -> Resolution:
-    """Resolve indicators and lead times for ``run`` (or the latest complete run): 2 calls."""
-    keys = fetch_capabilities(client)
+class MetadataCache:
+    """Disk cache of GetCapabilities and of the time axis per run hour.
+
+    ``capabilities.xml`` is reused while younger than ``max_age`` seconds, and as a
+    fallback (up to ``fallback_age``) when the live call fails. The time axis of a
+    run hour (03, 09, 15, 21 UTC) does not change from day to day, so it is asked
+    once and then read from ``time_axes.json``.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        max_age: float = 300.0,
+        fallback_age: float = 6 * 3600.0,
+        clock=None,
+    ) -> None:
+        import time
+
+        self.root = Path(root)
+        self.max_age = max_age
+        self.fallback_age = fallback_age
+        self._clock = clock or time.time
+
+    @property
+    def _caps(self) -> Path:
+        return self.root / "capabilities.xml"
+
+    @property
+    def _axes(self) -> Path:
+        return self.root / "time_axes.json"
+
+    def capabilities(self, max_age: float) -> str | None:
+        p = self._caps
+        if p.exists() and self._clock() - p.stat().st_mtime <= max_age:
+            return p.read_text()
+        return None
+
+    def save_capabilities(self, text: str) -> None:
+        _atomic_write(self._caps, text.encode())
+
+    def time_axis(self, run: datetime) -> list[int] | None:
+        if not self._axes.exists():
+            return None
+        return json.loads(self._axes.read_text()).get(f"{run.hour:02d}")
+
+    def save_time_axis(self, run: datetime, steps: list[int]) -> None:
+        axes = json.loads(self._axes.read_text()) if self._axes.exists() else {}
+        axes[f"{run.hour:02d}"] = steps
+        _atomic_write(self._axes, json.dumps(axes, sort_keys=True).encode())
+
+
+def _capabilities_text(client: WcsClient, cache: MetadataCache | None) -> str:
+    if cache is not None:
+        fresh = cache.capabilities(cache.max_age)
+        if fresh is not None:
+            logger.info("GetCapabilities from cache")
+            return fresh
+    try:
+        text = get_xml(
+            client,
+            "GetCapabilities",
+            [("service", "WCS"), ("version", "2.0.1"), ("language", "eng")],
+        )
+    except WcsAuthError:
+        raise
+    except WcsError as exc:
+        stale = cache.capabilities(cache.fallback_age) if cache is not None else None
+        if stale is None:
+            raise
+        logger.warning("GetCapabilities failed (%s), using the cached copy", exc)
+        return stale
+    if cache is not None:
+        cache.save_capabilities(text)
+    return text
+
+
+def discover(
+    client: WcsClient,
+    run: datetime | None = None,
+    cache: MetadataCache | None = None,
+    describe: bool = True,
+) -> Resolution:
+    """Resolve indicators and lead times for ``run`` (or the latest complete run).
+
+    At most 2 calls, usually 1 or 0 with a cache. A failed DescribeCoverage falls
+    back to the default lead times instead of failing.
+    """
+    keys = parse_capabilities(_capabilities_text(client, cache))
     if run is None:
         runs = latest_complete_runs(keys)
         if not runs:
             raise WcsError("no run with every required variable in GetCapabilities")
         run = runs[0]
     res = resolve(keys, run)
+    cached = cache.time_axis(run) if cache is not None else None
+    if cached:
+        res.steps_seconds, res.steps_source = list(cached), "cache"
+        return res
+    if not describe:
+        return res
     t2m = next(v for s, v in res.variables() if s.name == "t2m")
     try:
         steps = fetch_time_axis(client, coverage_id(t2m, run))
-        res.steps_seconds = steps
-        res.steps_source = "describe"
+    except WcsAuthError:
+        raise
     except (WcsError, ValueError) as exc:
         logger.warning("time axis unavailable (%s), using the default lead time", exc)
+        return res
+    res.steps_seconds, res.steps_source = steps, "describe"
+    if cache is not None:
+        cache.save_time_axis(run, steps)
     return res
 
 
@@ -635,7 +745,7 @@ def download_run(
     store: RawStore,
     *,
     workers: int = 2,
-    budget: int = 13_000,
+    budget: int = 14_000,
     max_missing_ratio: float = 0.2,
 ) -> FetchReport:
     """Stage every field of ``plan``, member by member, with budget and circuit breaker."""
@@ -686,7 +796,9 @@ def _is_auth_failure(message: str) -> bool:
 
 def make_transform(resolution: Resolution):
     def transform(var: Variable, data: np.ndarray, steps: list[int]) -> np.ndarray:
-        spec = VARIABLES_BY_NAME[var.name]
+        spec = VARIABLES_BY_NAME.get(var.name)
+        if spec is None:  # constant fields (orography, land-sea mask)
+            return data
         if spec.kind == "accum" and var.interval is None:
             return deaccumulate(data, steps)
         if spec.kind == "accum" and var.interval not in ("PT1H",):
@@ -698,6 +810,72 @@ def make_transform(resolution: Resolution):
     return transform
 
 
+@dataclass(frozen=True)
+class ConstantSpec:
+    """A static field taken from the grid's constant-fields GRIB file."""
+
+    name: str
+    short_names: tuple[str, ...]
+    units: str
+    description: str
+
+
+# File ``constant-eurw1s40.grib2`` (grid EURW1S40, 0.025°, 1121 x 717 points,
+# 37.5..55.4 N, 12 W..16 E), checked on 2026-11-27: messages ``h`` (m) and ``lsm``.
+CONSTANTS_FILE = "constant-eurw1s40.grib2"
+CONSTANTS: tuple[ConstantSpec, ...] = (
+    ConstantSpec("orog", ("h", "orog"), "m", "model orography (geometrical height)"),
+    ConstantSpec("lsm", ("lsm",), "%", "land-sea mask"),
+)
+CONSTANTS_SOURCE = (
+    "Météo-France, champs constants de la grille EURW1S40 (0,025°), documentation de "
+    "l'API (Confluence Météo-France), Licence Ouverte Etalab 2.0"
+)
+
+
+def iter_grib_messages(path: Path):
+    """Yield (shortName, raw message bytes) for every message of a GRIB file."""
+    import eccodes  # local import: heavy native dependency
+
+    with open(path, "rb") as fh:
+        while True:
+            gid = eccodes.codes_grib_new_from_file(fh)
+            if gid is None:
+                return
+            try:
+                yield str(eccodes.codes_get(gid, "shortName")), eccodes.codes_get_message(gid)
+            finally:
+                eccodes.codes_release(gid)
+
+
+def stage_constants(
+    constants_file: Path, run: datetime, store: RawStore, reader=iter_grib_messages
+) -> list[CoverageRequest]:
+    """Copy the wanted constant fields into the run's staging area as static requests.
+
+    The grid is checked later, by ``write_run``, against the run's fields.
+    """
+    messages = dict(reader(constants_file))
+    requests = []
+    for spec in CONSTANTS:
+        short = next((s for s in spec.short_names if s in messages), None)
+        if short is None:
+            logger.warning("%s: no %s in %s", spec.name, spec.short_names, constants_file)
+            continue
+        var = Variable(spec.name, f"{constants_file.name}:{short}")
+        req = CoverageRequest(MODEL, run, 0, var, 0)
+        store.write(req, messages[short])
+        requests.append(req)
+    return requests
+
+
+def default_constants_file() -> Path:
+    env = os.environ.get("AROME_PE_CONSTANTS")
+    if env:
+        return Path(env)
+    return Path(os.environ.get("DATA_DIR", "data/zarr")) / "static" / MODEL.name / CONSTANTS_FILE
+
+
 def convert_run(
     raw_run_dir: Path,
     out_dir: Path,
@@ -705,12 +883,19 @@ def convert_run(
     decoder=decode_canonical_eccodes,
     bbox: BBox | None = FRANCE_BBOX,
     keep: int | None = None,
+    constants_file: Path | None = None,
+    constants_reader=iter_grib_messages,
 ) -> Path:
     text = (raw_run_dir / RESOLUTION_FILE).read_text()
     resolution = Resolution.from_json(text)
     meta = json.loads(text)
     plan = build_plan(resolution, meta.get("members"), meta.get("max_lead_hours"))
     store = RawStore(raw_run_dir)
+    static = list(plan.static)
+    if constants_file is not None and constants_file.exists():
+        static += stage_constants(constants_file, resolution.run, store, constants_reader)
+    elif constants_file is not None:
+        logger.warning("constant fields file %s not found: no orography", constants_file)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{run_tag(resolution.run)}.zarr"
     var_attrs = {
@@ -722,6 +907,13 @@ def convert_run(
         }
         for s, v in resolution.variables()
     }
+    for c in CONSTANTS:
+        var_attrs[c.name] = {
+            "units": c.units,
+            "description": c.description,
+            "kind": "static",
+            "source": CONSTANTS_SOURCE,
+        }
     report = write_run(
         out,
         plan.fields,
@@ -734,7 +926,7 @@ def convert_run(
             "unresolved": resolution.unresolved,
         },
         transform=make_transform(resolution),
-        static=plan.static,
+        static=static,
         var_attrs=var_attrs,
     )
     logger.info("%s: %d fields, %d missing", out, report.fields, report.missing)
@@ -828,9 +1020,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-lead", type=int, help="last lead time in hours (tests)")
     ap.add_argument("--rate", type=float, default=5.0, help="requests per second (default 5)")
     ap.add_argument("--workers", type=int, default=2)
-    ap.add_argument("--budget", type=int, default=13_000, help="max calls for one fetch")
+    ap.add_argument("--budget", type=int, default=14_000, help="max calls for one fetch")
     ap.add_argument("--offline", action="store_true", help="plan without any call")
     ap.add_argument("--keep", type=int, help="runs to keep after convert")
+    ap.add_argument(
+        "--constants",
+        type=Path,
+        default=default_constants_file(),
+        help="constant-fields GRIB of the 0.025° grid (orography, land-sea mask); "
+        "default $AROME_PE_CONSTANTS or $DATA_DIR/static/arome-pe/" + CONSTANTS_FILE,
+    )
     ap.add_argument(
         "--raw", type=Path, default=Path(os.environ.get("RAW_DIR", "data/raw")) / MODEL.name
     )
@@ -858,13 +1057,14 @@ def main(argv: list[str] | None = None) -> int:
         if not runs:
             print("aucun run en attente", file=sys.stderr)
             return 1
-        print(convert_run(runs[-1], args.out, keep=args.keep))
+        print(convert_run(runs[-1], args.out, keep=args.keep, constants_file=args.constants))
         return 0
 
     try:
         client = _client(args)
+        cache = MetadataCache(args.raw)
         if args.command == "check":
-            res = discover(client, args.run)
+            res = discover(client, args.run, cache)
             _print_resolution(res)
             t2m = next(v for s, v in res.variables() if s.name == "t2m")
             req = CoverageRequest(MODEL, res.run, 0, t2m, STEP_SECONDS)
@@ -884,7 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
         if run_dir is not None and (run_dir / RESOLUTION_FILE).exists():
             res = Resolution.from_json((run_dir / RESOLUTION_FILE).read_text())
         else:
-            res = discover(client, args.run)
+            res = discover(client, args.run, cache)
             run_dir = args.raw / run_tag(res.run)
         missing_required = [n for n in res.unresolved if VARIABLES_BY_NAME[n].required]
         _print_resolution(res)
@@ -916,6 +1116,9 @@ def main(argv: list[str] | None = None) -> int:
     except WcsAuthError as exc:
         print(f"authentification : {exc}", file=sys.stderr)
         return 2
+    except WcsError as exc:
+        print(f"Météo-France indisponible ou quota atteint : {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

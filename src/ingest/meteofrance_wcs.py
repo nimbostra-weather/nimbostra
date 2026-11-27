@@ -494,7 +494,12 @@ class WcsClient:
                     hint if hint is not None else self.retry.backoff(attempt, self._rng),
                 )
                 wait = min(wait, self.retry.max_delay)
-                logger.warning("429 on %s, pausing all workers %.1fs", req.key, wait)
+                logger.warning(
+                    "429 on %s, pausing all workers %.1fs (%s)",
+                    req.key,
+                    wait,
+                    _throttle_details(resp),
+                )
                 self.limiter.pause(wait)
                 last_error = "429 Too Many Requests"
                 continue
@@ -559,6 +564,17 @@ class WcsClient:
         report.http_calls = self.http_calls - calls_before
         report.throttled = self.throttled - throttled_before
         return report
+
+
+def _throttle_details(resp: httpx.Response) -> str:
+    """Rate-limit headers and the start of the body of a 429, for diagnosis."""
+    headers = {
+        k: v
+        for k, v in resp.headers.items()
+        if any(w in k.lower() for w in ("rate", "limit", "retry", "quota", "throttl"))
+    }
+    body = " ".join(resp.text[:300].split())
+    return f"headers={headers} body={body!r}"
 
 
 def _is_expired_token(resp: httpx.Response) -> bool:
