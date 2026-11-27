@@ -12,12 +12,16 @@ thread pool, which suits the blocking Zarr reads.
 
 Responses carry ``Cache-Control`` and an ``ETag`` derived from the run and the
 query, so Caddy or the browser can reuse them until the next run is published.
+The ETag never depends on the body, so the per-request ``timing`` field (also
+sent as a ``Server-Timing`` header) does not defeat revalidation; a matching
+``If-None-Match`` is answered with 304 before any Zarr read.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Literal
@@ -67,15 +71,60 @@ class Settings:
         return self.stores[model]
 
 
+class Timer:
+    """Wall-clock steps of one request, in milliseconds.
+
+    ``step(name)`` closes the step started at the previous call (or at creation);
+    ``total_ms`` runs from creation.
+    """
+
+    def __init__(self) -> None:
+        self.start = self._last = time.perf_counter()
+        self.steps: dict[str, float] = {}
+
+    def step(self, name: str) -> None:
+        now = time.perf_counter()
+        self.steps[name] = self.steps.get(name, 0.0) + (now - self._last) * 1000
+        self._last = now
+
+    def as_json(self) -> dict[str, float]:
+        out = {f"{k}_ms": round(v, 1) for k, v in self.steps.items()}
+        out["total_ms"] = round((time.perf_counter() - self.start) * 1000, 1)
+        return out
+
+    @staticmethod
+    def header(timing: dict[str, float]) -> str:
+        """``Server-Timing`` value, e.g. ``read;dur=12.3, total;dur=14.1``."""
+        return ", ".join(f"{k.removesuffix('_ms')};dur={v}" for k, v in timing.items())
+
+
 def _etag(*parts: object) -> str:
     digest = hashlib.sha1("|".join(map(str, parts)).encode()).hexdigest()[:20]
     return f'"{digest}"'
 
 
-def _cached(request: Request, body: dict, etag: str) -> Response:
-    headers = {"Cache-Control": f"public, max-age={CACHE_SECONDS}", "ETag": etag}
+def _cache_headers(etag: str) -> dict[str, str]:
+    return {"Cache-Control": f"public, max-age={CACHE_SECONDS}", "ETag": etag}
+
+
+def _not_modified(request: Request, etag: str) -> Response | None:
+    """304 if the client already holds this ETag, else None."""
     if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers=headers)
+        return Response(status_code=304, headers=_cache_headers(etag))
+    return None
+
+
+def _cached(request: Request, body: dict, etag: str, timer: Timer) -> Response:
+    """JSON response with cache headers and timings (body ``timing`` + ``Server-Timing``).
+
+    The ETag is computed from the run and the query only, never from the body,
+    so the timings changing on every call leave it stable.
+    """
+    if (hit := _not_modified(request, etag)) is not None:
+        return hit
+    timing = timer.as_json()
+    body["timing"] = timing
+    headers = _cache_headers(etag) | {"Server-Timing": Timer.header(timing)}
     return JSONResponse(body, headers=headers)
 
 
@@ -128,6 +177,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/models")
     def models(request: Request) -> Response:
+        timer = Timer()
         out, runs = [], []
         for name in settings.models:
             info = KNOWN_MODELS[name]
@@ -159,8 +209,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             runs.append(entry["run"])
             out.append(entry)
+        timer.step("read")
         body = {"models": out, "attribution": ATTRIBUTION}
-        return _cached(request, body, _etag("models", *runs))
+        return _cached(request, body, _etag("models", *runs), timer)
 
     @app.get("/v1/raw/{model}/point")
     def raw_point(
@@ -173,7 +224,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             str | None, Query(description="Liste séparée par des virgules, ex. t2m,u10")
         ] = None,
     ) -> Response:
+        timer = Timer()
         run, group = open_latest(model)
+        etag = _etag("raw", model, run, lat, lon, method, variables)
+        if (hit := _not_modified(request, etag)) is not None:
+            return hit
         wanted = [v for v in variables.split(",") if v] if variables else None
         try:
             data = read_raw(group, model, run, lat, lon, method=method, variables=wanted)
@@ -181,9 +236,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(422, f"point hors du domaine de {model} : {exc}") from exc
         except KeyError as exc:
             raise HTTPException(422, str(exc.args[0])) from exc
+        timer.step("read")
         body = data.to_json()
         body["static"] = {k: round(v, 1) for k, v in data.static.items()}
-        return _cached(request, body, _etag("raw", model, run, lat, lon, method, variables))
+        return _cached(request, body, etag, timer)
 
     @app.get("/v1/forecast/point")
     def forecast_point(
@@ -196,13 +252,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ] = None,
         model: Annotated[str, Query(description="Modèle (AROME seul pour l'instant)")] = "arome",
     ) -> Response:
+        timer = Timer()
         run, group = open_latest(model)
+        etag = _etag("forecast", model, run, lat, lon, alt)
+        if (hit := _not_modified(request, etag)) is not None:
+            return hit
         try:
             raw = read_raw(group, model, run, lat, lon)
         except OutOfDomain as exc:
             raise HTTPException(422, f"point hors du domaine de {model} : {exc}") from exc
-        body = derive(raw, elevation=alt, dem=settings.dem).to_json()
-        return _cached(request, body, _etag("forecast", model, run, lat, lon, alt))
+        timer.step("read")
+        forecast = derive(raw, elevation=alt, dem=settings.dem)
+        timer.step("derive")
+        body = forecast.to_json()
+        return _cached(request, body, etag, timer)
 
     return app
 

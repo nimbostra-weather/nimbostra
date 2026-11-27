@@ -8,8 +8,8 @@ uvicorn api.app:app --host 127.0.0.1 --port 8000
 
 `DATA_DIR` (environnement ou `.env`) désigne le dossier des Zarr publiés
 (`$DATA_DIR/arome/latest.json`). La documentation interactive est servie sur
-`/v1/docs`, le schéma sur `/v1/openapi.json`. L'API est publique, sans clé ;
-la limite de débit sera posée dans Caddy (étape d'exploitation).
+`/v1/docs`, le schéma sur `/v1/openapi.json`. L'API est publique, sans clé
+et, pour l'instant, sans limite de débit (voir `docs/exploitation.md`).
 
 ## Routes
 
@@ -43,13 +43,32 @@ l'orographie du modèle ; `elevation.source` dit laquelle a servi.
     "temperature": {"units": "degC", "values": [3.1, 2.8]},
     "precipitation": {"units": "mm", "values": [null, 0.4]}
   },
-  "attribution": "Source : Météo-France (Licence Ouverte Etalab 2.0)"
+  "attribution": "Source : Météo-France (Licence Ouverte Etalab 2.0)",
+  "timing": {"read_ms": 18.4, "derive_ms": 1.2, "total_ms": 19.9}
 }
 ```
 
 - Colonnes : une liste de valeurs par variable, alignée sur `times` (UTC).
 - `null` = valeur absente (cumuls et rafales à l'échéance 0, champ manquant).
 - Une précipitation à l'instant t est le cumul de l'heure qui se termine à t.
+
+## Temps de traitement
+
+Chaque réponse 200 de `/v1/models`, `/v1/raw/{model}/point` et
+`/v1/forecast/point` porte un objet `timing`, en millisecondes (1 décimale),
+mesuré côté serveur :
+
+| Champ | Contenu | Routes |
+|-------|---------|--------|
+| `read_ms` | ouverture du run courant et lecture Zarr du point (ou des métadonnées pour `/v1/models`) | toutes |
+| `derive_ms` | correction d'altitude et grandeurs dérivées | `/v1/forecast/point` |
+| `total_ms` | du début du traitement jusqu'à la construction de la réponse (seul l'encodage JSON final n'est pas compté) | toutes |
+
+Les mêmes valeurs sont envoyées dans l'en-tête standard `Server-Timing`
+(`read;dur=18.4, derive;dur=1.2, total;dur=19.9`), visible dans l'onglet
+Réseau des navigateurs. Le temps réseau et celui de Caddy ne sont pas comptés.
+Une réponse servie depuis un cache (navigateur, `max-age=300`) garde le
+`timing` de l'appel qui l'a produite.
 
 ## Erreurs
 
@@ -63,5 +82,8 @@ l'orographie du modèle ; `elevation.source` dit laquelle a servi.
 
 Chaque réponse porte `Cache-Control: public, max-age=300` et un `ETag` qui
 dépend du run et des paramètres : un client qui renvoie `If-None-Match`
-reçoit `304` tant qu'aucun nouveau run n'est publié. Pas de Redis à ce stade
+reçoit `304` tant qu'aucun nouveau run n'est publié. L'`ETag` est calculé à
+partir du run et des paramètres seulement, jamais du corps : le `timing`, qui
+change à chaque appel, ne le modifie donc pas. Le `304` est renvoyé avant toute
+lecture Zarr, sans corps ni `Server-Timing`. Pas de Redis à ce stade
 (lecture d'un point en ~20 ms).
