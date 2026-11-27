@@ -1,0 +1,16 @@
+# Alert when the latest published run is older than ALERT_MAX_AGE_HOURS.
+[Unit]
+Description=Nimbostra: run freshness check
+
+[Service]
+Type=oneshot
+User=nimbostra
+Group=nimbostra
+WorkingDirectory=/opt/nimbostra/src
+EnvironmentFile=/opt/nimbostra/.env
+ExecStart=/opt/nimbostra/.venv/bin/python -m ingest.health check --notify
+# Exit 1 means "stale" and the alert is already sent: no second alert.
+SuccessExitStatus=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes

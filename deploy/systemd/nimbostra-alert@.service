@@ -1,0 +1,14 @@
+# Started by OnFailure= of another unit; %i is the failed unit's name.
+[Unit]
+Description=Nimbostra: alert for failed %i
+
+[Service]
+Type=oneshot
+User=nimbostra
+Group=nimbostra
+WorkingDirectory=/opt/nimbostra/src
+EnvironmentFile=/opt/nimbostra/.env
+ExecStart=/opt/nimbostra/.venv/bin/python -m ingest.health alert "échec de %i (journalctl -u %i)"
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
