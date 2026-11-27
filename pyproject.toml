@@ -15,6 +15,12 @@ dev = ["pytest", "ruff"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = [
+    "EXE001", "BLE001", "S110", "B023", "C408",
+    "RUF015", "RUF059", "RUF100", "FURB122", "FURB167",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
