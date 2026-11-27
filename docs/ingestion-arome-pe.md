@@ -46,7 +46,8 @@ Une variable facultative introuvable est ignorée et notée dans l'attribut
   des clusters.
 - Cumuls : avec l'intervalle PT1H, la valeur est déjà « par pas ». Sans
   intervalle, le cumul depuis le début du run est converti par différence.
-  Pas de champ à l'échéance 0 pour les cumuls et les rafales.
+  Pas de champ à l'échéance 0 pour les cumuls, les rafales et `lcc`
+  (404 constaté le 2026-11-27) : ils ne sont pas demandés.
 - Unités converties d'après la clé GRIB `units` (K → °C, Pa → hPa,
   fraction → %, kg/m² → mm). Une unité inconnue arrête la conversion.
 - Rafales : seulement en composantes U et V, comme AROME déterministe ;
@@ -84,8 +85,8 @@ fonctionne mais le Zarr n'a ni `orog` ni `lsm`.
 
 | Run | Appels |
 |-----|--------|
-| 09z, 21z (51 h) | 12 900 champs + 2 métadonnées + 2 sondes |
-| 03z, 15z (45 h) | 11 400 champs + 4 |
+| 09z, 21z (51 h) | 12 875 champs + 0 à 2 métadonnées + 2 sondes |
+| 03z, 15z (45 h) | 11 375 champs + 0 à 4 |
 
 Soit environ 43 minutes à 5 requêtes par seconde (réglage par défaut),
 22 minutes à 10 par seconde. Les rafales en composantes coûtent à elles
@@ -101,6 +102,20 @@ au-delà, rien n'est lancé.
   membre manquent, l'ingestion s'arrête au lieu de brûler le quota.
 - Arrêt immédiat sur erreur d'authentification.
 - Une 429 met en pause tous les fils (client WCS).
+
+## Appels de métadonnées
+
+`GetCapabilities` et `DescribeCoverage` sont limités à part, et bien plus
+tôt que `GetCoverage` : le 2026-11-27, 8 refus 429 de suite en 35 s alors que
+les champs passaient sans problème. D'où :
+
+- un cache disque dans le dossier brut : `capabilities.xml`, réutilisé
+  pendant 5 minutes, ou jusqu'à 6 h si l'appel échoue ; et `time_axes.json`,
+  qui garde les échéances par heure de run (03, 09, 15, 21 UTC), demandées
+  une seule fois ;
+- sur un 429, des attentes croissantes de 10, 20, 40, 80 puis 120 s ;
+- en cas d'échec, les échéances par défaut, et un message clair avec le
+  code de sortie 1 au lieu d'une trace Python.
 
 ## Reprise
 

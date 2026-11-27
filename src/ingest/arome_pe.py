@@ -107,6 +107,8 @@ class PeVariable:
     intervals: tuple[str | None, ...] = (None,)
     required: bool = False
     description: str = ""
+    # False when the field is not produced at lead time 0 (seen for lcc: 404 at +0 h).
+    lead0: bool = True
 
 
 # Names checked against GetCapabilities on 2026-11-27 (run 09z). Canonical names follow
@@ -184,6 +186,7 @@ AROME_PE_VARIABLES: tuple[PeVariable, ...] = (
         "%",
         required=True,
         description="low cloud cover (the only cloud field of AROME-PE)",
+        lead0=False,
     ),
     PeVariable(
         "mslp",
@@ -452,8 +455,8 @@ class RunPlan:
 
 
 def steps_for(spec: PeVariable, steps: Sequence[int]) -> list[int]:
-    """Accumulations and maxima have no field at lead time 0."""
-    if spec.kind in ("accum", "max"):
+    """Accumulations, maxima and some diagnostics (lcc) have no field at lead time 0."""
+    if spec.kind in ("accum", "max") or not spec.lead0:
         return [s for s in steps if s > 0]
     return list(steps)
 
@@ -492,13 +495,24 @@ def estimate(plan: RunPlan, rate_per_second: float, mb_per_field: float = 0.6) -
 # --------------------------------------------------------------------------- metadata calls
 
 
+# Metadata operations are throttled separately from GetCoverage (2026-11-27: 8
+# consecutive 429 on DescribeCoverage over 35 s while GetCoverage calls succeeded).
+# Hence a longer, progressive wait, and a disk cache so that they are rarely needed.
+METADATA_429_DELAYS = (10.0, 20.0, 40.0, 80.0, 120.0)
+
+
 def get_xml(
-    client: WcsClient, operation: str, params: list[tuple[str, str]], member: int = 0
+    client: WcsClient,
+    operation: str,
+    params: list[tuple[str, str]],
+    member: int = 0,
+    delays_429: Sequence[float] = METADATA_429_DELAYS,
 ) -> str:
     """GetCapabilities / DescribeCoverage through the client's auth and rate limiter."""
     url = client.model.service_url(member, operation)
     refreshed = False
-    for attempt in range(client.retry.max_attempts):
+    throttled = 0
+    for attempt in range(client.retry.max_attempts + len(delays_429)):
         client.limiter.acquire()
         headers = client.auth.headers()
         try:
@@ -516,8 +530,12 @@ def get_xml(
             refreshed = True
             continue
         if resp.status_code == 429:
+            if throttled >= len(delays_429):
+                raise WcsError(f"{operation}: still throttled after {throttled + 1} attempts")
             hint = parse_retry_after(resp)
-            wait = min(client.retry.max_delay, max(client.retry.min_429_delay, hint or 0.0))
+            wait = max(delays_429[throttled], hint or 0.0)
+            throttled += 1
+            logger.warning("429 on %s, waiting %.0fs", operation, wait)
             client.limiter.pause(wait)
             continue
         if resp.status_code in (500, 502, 503, 504):
@@ -549,22 +567,117 @@ def fetch_time_axis(client: WcsClient, coverage: str) -> list[int]:
     return parse_time_axis(text)
 
 
-def discover(client: WcsClient, run: datetime | None = None) -> Resolution:
-    """Resolve indicators and lead times for ``run`` (or the latest complete run): 2 calls."""
-    keys = fetch_capabilities(client)
+class MetadataCache:
+    """Disk cache of GetCapabilities and of the time axis per run hour.
+
+    ``capabilities.xml`` is reused while younger than ``max_age`` seconds, and as a
+    fallback (up to ``fallback_age``) when the live call fails. The time axis of a
+    run hour (03, 09, 15, 21 UTC) does not change from day to day, so it is asked
+    once and then read from ``time_axes.json``.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        max_age: float = 300.0,
+        fallback_age: float = 6 * 3600.0,
+        clock=None,
+    ) -> None:
+        import time
+
+        self.root = Path(root)
+        self.max_age = max_age
+        self.fallback_age = fallback_age
+        self._clock = clock or time.time
+
+    @property
+    def _caps(self) -> Path:
+        return self.root / "capabilities.xml"
+
+    @property
+    def _axes(self) -> Path:
+        return self.root / "time_axes.json"
+
+    def capabilities(self, max_age: float) -> str | None:
+        p = self._caps
+        if p.exists() and self._clock() - p.stat().st_mtime <= max_age:
+            return p.read_text()
+        return None
+
+    def save_capabilities(self, text: str) -> None:
+        _atomic_write(self._caps, text.encode())
+
+    def time_axis(self, run: datetime) -> list[int] | None:
+        if not self._axes.exists():
+            return None
+        return json.loads(self._axes.read_text()).get(f"{run.hour:02d}")
+
+    def save_time_axis(self, run: datetime, steps: list[int]) -> None:
+        axes = json.loads(self._axes.read_text()) if self._axes.exists() else {}
+        axes[f"{run.hour:02d}"] = steps
+        _atomic_write(self._axes, json.dumps(axes, sort_keys=True).encode())
+
+
+def _capabilities_text(client: WcsClient, cache: MetadataCache | None) -> str:
+    if cache is not None:
+        fresh = cache.capabilities(cache.max_age)
+        if fresh is not None:
+            logger.info("GetCapabilities from cache")
+            return fresh
+    try:
+        text = get_xml(
+            client,
+            "GetCapabilities",
+            [("service", "WCS"), ("version", "2.0.1"), ("language", "eng")],
+        )
+    except WcsAuthError:
+        raise
+    except WcsError as exc:
+        stale = cache.capabilities(cache.fallback_age) if cache is not None else None
+        if stale is None:
+            raise
+        logger.warning("GetCapabilities failed (%s), using the cached copy", exc)
+        return stale
+    if cache is not None:
+        cache.save_capabilities(text)
+    return text
+
+
+def discover(
+    client: WcsClient,
+    run: datetime | None = None,
+    cache: MetadataCache | None = None,
+    describe: bool = True,
+) -> Resolution:
+    """Resolve indicators and lead times for ``run`` (or the latest complete run).
+
+    At most 2 calls, usually 1 or 0 with a cache. A failed DescribeCoverage falls
+    back to the default lead times instead of failing.
+    """
+    keys = parse_capabilities(_capabilities_text(client, cache))
     if run is None:
         runs = latest_complete_runs(keys)
         if not runs:
             raise WcsError("no run with every required variable in GetCapabilities")
         run = runs[0]
     res = resolve(keys, run)
+    cached = cache.time_axis(run) if cache is not None else None
+    if cached:
+        res.steps_seconds, res.steps_source = list(cached), "cache"
+        return res
+    if not describe:
+        return res
     t2m = next(v for s, v in res.variables() if s.name == "t2m")
     try:
         steps = fetch_time_axis(client, coverage_id(t2m, run))
-        res.steps_seconds = steps
-        res.steps_source = "describe"
+    except WcsAuthError:
+        raise
     except (WcsError, ValueError) as exc:
         logger.warning("time axis unavailable (%s), using the default lead time", exc)
+        return res
+    res.steps_seconds, res.steps_source = steps, "describe"
+    if cache is not None:
+        cache.save_time_axis(run, steps)
     return res
 
 
@@ -946,8 +1059,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         client = _client(args)
+        cache = MetadataCache(args.raw)
         if args.command == "check":
-            res = discover(client, args.run)
+            res = discover(client, args.run, cache)
             _print_resolution(res)
             t2m = next(v for s, v in res.variables() if s.name == "t2m")
             req = CoverageRequest(MODEL, res.run, 0, t2m, STEP_SECONDS)
@@ -967,7 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
         if run_dir is not None and (run_dir / RESOLUTION_FILE).exists():
             res = Resolution.from_json((run_dir / RESOLUTION_FILE).read_text())
         else:
-            res = discover(client, args.run)
+            res = discover(client, args.run, cache)
             run_dir = args.raw / run_tag(res.run)
         missing_required = [n for n in res.unresolved if VARIABLES_BY_NAME[n].required]
         _print_resolution(res)
@@ -999,6 +1113,9 @@ def main(argv: list[str] | None = None) -> int:
     except WcsAuthError as exc:
         print(f"authentification : {exc}", file=sys.stderr)
         return 2
+    except WcsError as exc:
+        print(f"Météo-France indisponible ou quota atteint : {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

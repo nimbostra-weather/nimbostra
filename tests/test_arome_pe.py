@@ -265,10 +265,11 @@ def test_full_run_call_count_matches_budget_estimate():
     n_inst = sum(1 for v in AROME_PE_VARIABLES if v.kind == "instant")  # 6
     n_acc = sum(1 for v in AROME_PE_VARIABLES if v.kind in ("accum", "max"))  # 4
     assert (n_inst, n_acc) == (6, 4)
-    assert len(plan.fields) == 25 * (n_inst * 52 + n_acc * 51)
+    # lcc has no field at lead time 0 (404 seen on 2026-11-27).
+    assert len(plan.fields) == 25 * (n_inst * 52 + n_acc * 51 - 1)
     assert plan.static == []  # no orography in the AROME-PE WCS
-    assert len(plan) == 12_900
-    assert len(build_plan(offline_resolution(RUN.replace(hour=3)))) == 25 * (6 * 46 + 4 * 45)
+    assert len(plan) == 12_875
+    assert len(build_plan(offline_resolution(RUN.replace(hour=3)))) == 25 * (6 * 46 + 4 * 45 - 1)
     # Member-major: member 0 comes entirely first, so a partial run is usable.
     first_m1 = next(i for i, r in enumerate(plan.fields) if r.member == 1)
     assert all(r.member == 0 for r in plan.fields[:first_m1])
@@ -282,6 +283,7 @@ def test_plan_no_lead_zero_for_accumulations_and_maxima():
     assert by_var["t2m"] == [0, 3600, 7200]
     assert by_var["precip"] == [3600, 7200]
     assert by_var["gust_u10"] == [3600, 7200]
+    assert by_var["lcc"] == [3600, 7200]
 
 
 def test_requests_are_unit_calls_with_height_and_interval():
@@ -466,7 +468,7 @@ def test_cli_offline_plan_makes_no_call(capsys, monkeypatch):
     monkeypatch.setattr(httpx.Client, "send", boom)
     assert arome_pe.main(["plan", "--offline", "--run", "20261127T09Z"]) == 0
     out = capsys.readouterr().out
-    assert "12900 appels" in out
+    assert "12875 appels" in out
 
 
 def test_decode_canonical_eccodes_converts_kelvin():
@@ -547,3 +549,67 @@ def test_convert_without_constants_file_still_works(tmp_path):
         constants_file=tmp_path / "absent.grib2",
     )
     assert "orog" not in zarr.open_group(str(out), mode="r")["surface"]
+
+
+# --------------------------------------------------------------------------- metadata throttling
+
+
+class ThrottledMetadata(FakeWcs):
+    """GetCoverage works, but metadata operations answer 429 (as on 2026-11-27)."""
+
+    def __call__(self, request):
+        if not request.url.path.endswith("GetCoverage"):
+            with self._lock:
+                self.calls.append(request)
+            return httpx.Response(429, text="throttled")
+        return super().__call__(request)
+
+
+def test_metadata_429_backs_off_progressively_then_fails_cleanly():
+    client = make_client(ThrottledMetadata())
+    clock = client.limiter._clock.__self__
+    with pytest.raises(arome_pe.WcsError, match="still throttled"):
+        discover(client)
+    # 10 + 20 + 40 + 80 + 120 s of waiting, not 8 x 5 s.
+    assert clock.now >= 270
+
+
+def test_capabilities_cache_and_stale_fallback(tmp_path):
+    now = [1_000_000.0]
+    cache = arome_pe.MetadataCache(tmp_path, clock=lambda: now[0])
+    wcs = FakeWcs()
+    res = discover(make_client(wcs), cache=cache)
+    assert res.steps_source == "describe"
+    assert wcs.count("GetCapabilities") == 1 and wcs.count("DescribeCoverage") == 1
+
+    # Fresh cache: no call at all, time axis from the per-run-hour cache.
+    import os
+
+    os.utime(tmp_path / "capabilities.xml", (now[0], now[0]))
+    again = FakeWcs()
+    res = discover(make_client(again), cache=cache)
+    assert again.calls == [] and res.steps_source == "cache" and res.run == RUN
+
+    # Older than max_age: asked again; if throttled, the stale copy is used.
+    now[0] += 3600
+    throttled = ThrottledMetadata()
+    res = discover(make_client(throttled), cache=cache)
+    assert res.run == RUN and throttled.count("GetCapabilities") == 6
+
+
+def test_time_axis_failure_falls_back_to_defaults():
+    class DescribeThrottled(FakeWcs):
+        def __call__(self, request):
+            if request.url.path.endswith("DescribeCoverage"):
+                return httpx.Response(429, text="throttled")
+            return super().__call__(request)
+
+    res = discover(make_client(DescribeThrottled()))
+    assert res.steps_source == "default" and res.steps_seconds[-1] == 51 * 3600
+
+
+def test_cli_reports_throttling_without_traceback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("METEOFRANCE_API_KEY", "test-key")
+    monkeypatch.setattr(arome_pe, "_client", lambda args: make_client(ThrottledMetadata()))
+    assert arome_pe.main(["plan", "--raw", str(tmp_path)]) == 1
+    assert "quota" in capsys.readouterr().err
