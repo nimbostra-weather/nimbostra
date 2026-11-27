@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 
 from ingest.dem import open_dem
 from ingest.dotenv import load_dotenv
+from ingest.health import DEFAULT_MAX_AGE_HOURS, check_freshness
 from point.reader import ElevationSource, NoRun, OutOfDomain, RunStore, derive, read_raw
 
 API_VERSION = "v1"
@@ -99,6 +100,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return run, store.group(path)
         except NoRun as exc:
             raise HTTPException(503, f"aucun run disponible pour {model}") from exc
+
+    @app.get("/v1/health")
+    def health() -> Response:
+        """Freshness of each model's latest run: 200 if all fresh, else 503.
+
+        Meant for an external uptime monitor; never cached.
+        """
+        max_age = float(os.environ.get("ALERT_MAX_AGE_HOURS", DEFAULT_MAX_AGE_HOURS))
+        checks = [
+            check_freshness(settings.data_dir / name, name, max_age_hours=max_age)
+            for name in settings.models
+        ]
+        body = {
+            "status": "ok" if all(c.ok for c in checks) else "stale",
+            "models": {
+                c.model: {
+                    "run": c.run.strftime("%Y-%m-%dT%H:%M:%SZ") if c.run else None,
+                    "age_hours": None if c.age_hours is None else round(c.age_hours, 2),
+                    "max_age_hours": c.max_age_hours,
+                }
+                for c in checks
+            },
+        }
+        status = 200 if body["status"] == "ok" else 503
+        return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})
 
     @app.get("/v1/models")
     def models(request: Request) -> Response:

@@ -1,0 +1,10 @@
+# Hourly: while a run is missing, the alert is repeated every hour.
+[Unit]
+Description=Nimbostra: hourly run freshness check
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

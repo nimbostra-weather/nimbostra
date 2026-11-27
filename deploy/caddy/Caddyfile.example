@@ -1,0 +1,22 @@
+# Nimbostra: API behind Caddy. To merge into the server's Caddyfile;
+# the other sites served by Caddy are untouched.
+#
+# No rate limiting for now: stock Caddy has none (see docs/exploitation.md).
+
+nimbostra.fr {
+	encode zstd gzip
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Static front-end (later step).
+	handle {
+		root * /var/www/nimbostra
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/nimbostra.log
+	}
+}
