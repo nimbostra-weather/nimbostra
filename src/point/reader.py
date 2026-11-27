@@ -283,10 +283,11 @@ def derive(
         wind = derived.wind_speed(s["u10"], s["v10"])
         put("wind_speed", wind, "m s-1")
         put("wind_direction", derived.wind_direction(s["u10"], s["v10"]), "deg")
-    if "gust_u10" in s and "gust_v10" in s:
-        put("wind_gust", derived.wind_speed(s["gust_u10"], s["gust_v10"]), "m s-1")
-    elif "gust10" in s:
+    if "gust10" in s:
+        # Max of the speed: hypot of separately maximised components overestimates it.
         put("wind_gust", s["gust10"], "m s-1")
+    elif "gust_u10" in s and "gust_v10" in s:
+        put("wind_gust", derived.wind_speed(s["gust_u10"], s["gust_v10"]), "m s-1")
     if t is not None and rh is not None and wind is not None:
         put("feels_like", derived.feels_like(t, rh, wind), "degC")
     rain, snow, graupel = s.get("rain"), s.get("snow"), s.get("graupel")

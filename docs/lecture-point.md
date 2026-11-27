@@ -33,9 +33,9 @@ AROME (`$DATA_DIR/arome`) comme pour ARPEGE (`$DATA_DIR/arpege`).
 | dewpoint | °C | Magnus (Alduchov et Eskridge 1996) |
 | wet_bulb | °C | Stull (2011), précision ~1 °C |
 | wind_speed, wind_direction | m/s, ° | à partir de u10, v10 ; direction d'où vient le vent |
-| wind_gust | m/s | hypot des composantes de rafale, sinon la rafale `gust10` (ARPEGE) |
+| wind_gust | m/s | rafale `gust10` si le modèle la fournit (ARPEGE), sinon hypot des composantes (AROME) |
 | feels_like | °C | refroidissement éolien (JAG/TI) si T ≤ 10 °C, indice de chaleur (Rothfusz) si T ≥ 27 °C et HR ≥ 40 % |
-| precipitation, rain, snow, graupel | mm par pas | AROME : somme des phases du modèle ; ARPEGE : `precip_total`, et rain = total − neige |
+| precipitation, rain, snow, graupel | mm par pas | AROME : somme des phases du modèle ; ARPEGE : `precip_total`, pluie `tirf` (à défaut total − neige) |
 | precipitation_type | texte | phase ≥ 80 % du total, sinon `mixed` ; `none` sous 0,1 mm |
 | rain_snow_limit | m | **estimation** : altitude où le thermomètre mouillé atteint 1 °C, extrapolé à 6,5 K/km |
 | cloud_total | % | tcc, si le modèle la fournit |

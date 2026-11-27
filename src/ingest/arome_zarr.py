@@ -125,11 +125,12 @@ REQUIRED = frozenset({"t2m", "u10", "v10", "orog"})
 # Packages read only for static fields.
 STATIC_PACKAGES = frozenset({"SP3"})
 
-# ARPEGE 0.1° SP1/SP2. Names expected from eccodes 2.50 tables and the package
-# lists published for ARPEGE 0.25° (meteofetch); to be checked with
-# ``python -m ingest.arome_convert inventory --model arpege`` on a real run.
-# ``tp`` is the total precipitation (all phases): stored as ``precip_total``,
-# never mixed with the per-phase AROME fields.
+# ARPEGE 0.1° SP1/SP2, names checked with ``arome_convert inventory --model arpege``
+# on the real run of 2026-11-27 12z. ``tp`` is the total precipitation (all
+# phases), stored as ``precip_total``; ``tirf`` (rain) and ``tsnowp`` (snow) are
+# its phases. The gust speed ``max_i10fg`` is stored next to its components.
+# The packages carry neither total cloud cover nor orography: ``tcc`` is kept in
+# case it appears, the orography comes from ``constant-eurat01.grib2``.
 ARPEGE_VARIABLES: tuple[VarSpec, ...] = (
     VarSpec("t2m", ("2t",), "degC", "instant", "heightAboveGround", 2, "2 m temperature"),
     VarSpec("r2", ("2r",), "%", "instant", "heightAboveGround", 2, "2 m relative humidity"),
@@ -156,7 +157,7 @@ ARPEGE_VARIABLES: tuple[VarSpec, ...] = (
     ),
     VarSpec(
         "gust10",
-        ("10fg", "max_10fg", "i10fg"),
+        ("max_i10fg", "i10fg", "10fg", "max_10fg"),
         "m s-1",
         "max",
         "heightAboveGround",
@@ -164,6 +165,7 @@ ARPEGE_VARIABLES: tuple[VarSpec, ...] = (
         "10 m gust speed, max over the past step",
     ),
     VarSpec("precip_total", ("tp",), "mm", "accum", description="total precipitation per step"),
+    VarSpec("rain", ("tirf",), "mm", "accum", description="liquid precipitation per step"),
     VarSpec("snow", ("tsnowp",), "mm", "accum", description="snowfall (water equivalent) per step"),
     VarSpec("tcc", ("tcc",), "%", description="total cloud cover"),
     VarSpec("lcc", ("lcc",), "%", description="low cloud cover"),

@@ -226,8 +226,50 @@ def test_arpege_variable_table():
     assert match("10fg", step="max") == "gust10"
     assert match("max_10efg", step="max") == "gust_u10"
     assert match("tp", "surface", 0, "accum") == "precip_total"
-    assert match("tirf", "surface", 0, "accum") is None  # never mixed with tp
     assert match("2d", level=2) == "d2m"
+
+
+# ``arome_convert inventory --model arpege`` on the real run of 2026-11-27 12z
+# (SP1 and SP2, file 013H024H): (shortName, typeOfLevel, level, stepType, units).
+REAL_INVENTORY = [
+    ("10wdir", "heightAboveGround", 10, "instant", "Degree true", None),
+    ("10si", "heightAboveGround", 10, "instant", "m s**-1", None),
+    ("tsnowp", "surface", 0, "accum", "kg m**-2", "snow"),
+    ("tp", "surface", 0, "accum", "kg m**-2", "precip_total"),
+    ("prmsl", "meanSea", 0, "instant", "Pa", "mslp"),
+    ("10u", "heightAboveGround", 10, "instant", "m s**-1", "u10"),
+    ("10v", "heightAboveGround", 10, "instant", "m s**-1", "v10"),
+    ("2t", "heightAboveGround", 2, "instant", "K", "t2m"),
+    ("2r", "heightAboveGround", 2, "instant", "%", "r2"),
+    ("max_i10fg", "heightAboveGround", 10, "max", "m s**-1", "gust10"),
+    ("tirf", "surface", 0, "accum", "kg m**-2", "rain"),
+    ("cp", "surface", 0, "accum", "kg m**-2", None),
+    ("lsp", "surface", 0, "accum", "kg m**-2", None),
+    ("max_10efg", "heightAboveGround", 10, "max", "m s**-1", "gust_u10"),
+    ("max_10nfg", "heightAboveGround", 10, "max", "m s**-1", "gust_v10"),
+    ("sd", "surface", 0, "instant", "kg m**-2", None),
+    ("2d", "heightAboveGround", 2, "instant", "K", "d2m"),
+    ("lcc", "surface", 0, "instant", "%", "lcc"),
+    ("hcc", "surface", 0, "instant", "%", "hcc"),
+    ("mcc", "surface", 0, "instant", "%", "mcc"),
+    ("t", "surface", 0, "instant", "K", None),
+    ("sp", "surface", 0, "instant", "Pa", "sp"),
+    ("CAPE_INS", "unknown", 0, "instant", "m**2 s**-2", "cape"),
+    ("blh", "surface", 0, "instant", "m", None),
+    ("ptype", "surface", 0, "avg", "(Code table 4.201)", None),
+    ("min_vis", "surface", 0, "min", "m", None),
+    ("d0c6n1", "surface", 0, "instant", "unknown", None),
+]
+
+
+@pytest.mark.parametrize(("short", "tol", "level", "step", "units", "expected"), REAL_INVENTORY)
+def test_real_arpege_inventory(short, tol, level, step, units, expected):
+    from ingest.arome_zarr import convert_units
+
+    spec = _match(MessageMeta(short, tol, level, step, 13, units), ARPEGE_VARIABLES)
+    assert (spec.name if spec else None) == expected
+    if spec is not None:
+        convert_units(np.float32([1.0]), units, spec.units)
 
 
 def test_cli_convert_arpege_with_constants_env(tmp_path, monkeypatch, capsys):
@@ -264,8 +306,7 @@ def arpege_extra():
 def make_arpege_store(root):
     path = make_store(root, RUN, extra=arpege_extra())
     g = zarr.open_group(str(path), mode="a")["surface"]
-    for name in ("rain", "gust_u10", "gust_v10"):  # AROME-only fields
-        del g[name]
+    del g["rain"]  # exercise the remainder (total - snow)
     return path
 
 
@@ -277,6 +318,7 @@ def test_derive_from_total_precipitation(tmp_path):
     np.testing.assert_allclose(s["precipitation"][1:], [2.0, 0.05, 3.0], atol=1e-5)
     np.testing.assert_allclose(s["rain"][1:], [1.5, 0.05, 0.0], atol=1e-5)
     assert list(s["precipitation_type"]) == [None, "mixed", "none", "snow"]
+    # The gust speed wins over the hypot of the components (6, 8 -> 10).
     assert s["wind_gust"][0] == pytest.approx(12.0)
     assert s["cloud_total"][0] == pytest.approx(90.0)
 
@@ -294,3 +336,11 @@ def test_api_serves_arpege(tmp_path):
     assert "cloud_total" in body["variables"] and "precipitation" in body["variables"]
     r = client.get("/v1/raw/arpege/point", params={"lat": 45.2, "lon": 6.2})
     assert r.status_code == 200 and "precip_total" in r.json()["variables"]
+
+
+def test_derive_prefers_model_rain_over_remainder(tmp_path):
+    path = make_store(tmp_path, RUN, extra=arpege_extra())  # keeps the stored rain
+    g = zarr.open_group(str(path), mode="r")["surface"]
+    out = derive(read_raw(g, "arpege", RUN, 45.2, 6.2))
+    np.testing.assert_allclose(out.series["rain"][1:], [2.0, 0.05, 0.1], atol=1e-5)
+    np.testing.assert_allclose(out.series["precipitation"][1:], [2.0, 0.05, 3.0], atol=1e-5)

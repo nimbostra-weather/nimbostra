@@ -47,8 +47,8 @@ groupe.
 
 ## Variables
 
-Les noms GRIB ci-dessous sont attendus d'après les tables eccodes et les listes
-publiées pour ARPEGE 0,25°. Ils restent **à vérifier** sur un vrai run :
+Les noms GRIB ci-dessous ont été vérifiés sur le run réel du 2026-11-27 12z
+(fichier 013H024H de SP1 et SP2). Pour revoir l'inventaire d'un run :
 
 ```bash
 cd src
@@ -66,28 +66,51 @@ python -m ingest.arome_convert convert --model arpege --keep 2
 | t2m, d2m | 2t, 2d | °C | |
 | r2 | 2r | % | |
 | u10, v10 | 10u, 10v | m/s | |
-| gust10 | 10fg (ou max_10fg) | m/s | maximum sur le pas |
-| gust_u10, gust_v10 | 10efg, 10nfg | m/s | si présentes |
-| precip_total | tp | mm par pas | total toutes phases ; `m` converti en mm |
-| snow | tsnowp | mm par pas | |
-| tcc, lcc, mcc, hcc | tcc, lcc, mcc, hcc | % | tcc seulement si le paquet l'a |
-| cape | CAPE_INS ou cape | J/kg | |
+| gust10 | max_i10fg | m/s | maximum de la vitesse sur le pas ; c'est la rafale servie |
+| gust_u10, gust_v10 | max_10efg, max_10nfg | m/s | composantes, stockées pour mémoire |
+| precip_total | tp | mm par pas | total toutes phases |
+| rain | tirf | mm par pas | pluie |
+| snow | tsnowp | mm par pas | neige (équivalent en eau) |
+| lcc, mcc, hcc | lcc, mcc, hcc | % | **pas de nébulosité totale** dans les paquets, comme AROME |
+| cape | CAPE_INS | J/kg | |
 | sp, mslp | sp, prmsl | hPa | |
-| orog | h (orog ou z) | m | voir ci-dessous |
+| orog | h | m | fichier de champs constants, voir ci-dessous |
 
-`precip_total` n'est jamais additionné aux phases : à la lecture, la pluie est
-le total moins la neige.
+À la lecture, la précipitation servie est `precip_total` ; la pluie est
+`tirf` (ou, à défaut, le total moins la neige). La rafale servie est
+`max_i10fg` : la norme des composantes maximisées séparément surestime le
+maximum de la vitesse.
+
+Présents mais non retenus pour l'instant : vitesse et direction du vent
+(`10si`, `10wdir`, recalculées à partir de u et v), précipitations
+convectives et de grande échelle (`cp`, `lsp`, `crr`, `lsrr`, `csfwe`,
+`lsfwe`), neige au sol (`sd`), rayonnements et flux (`ssrd`, `strd`, `ssr`,
+`str`, `slhf`, `sshf`…), `blh`, `2sh`, température de surface (`t`),
+`min_2t`/`max_2t` (toutes les 3 h), type de précipitation (`ptype`, table de
+code 4.201, en moyenne et maximum), visibilité minimale (`min_vis`) et
+quelques champs sans nom eccodes (`d0c…`, `d2c…`).
 
 ## Orographie
 
-Il faut l'orographie du modèle pour la correction d'altitude. Si les paquets
-n'en contiennent pas (à voir avec `inventory`), télécharger une fois le fichier
-de champs constants `constant-eurat01.grib2` (cité sur la page Confluence
-« Modèles et données de prévision »), le ranger hors du dépôt, par exemple
-dans `/data/static/arpege/`, puis indiquer son chemin dans `.env` :
-`ARPEGE_CONSTANTS=/data/static/arpege/constant-eurat01.grib2` (ou l'option
-`--constants`). Une orographie trouvée dans ce fichier l'emporte sur celle des
-paquets. Sans orographie, la conversion échoue et l'ancien Zarr reste en place.
+Il faut l'orographie du modèle pour la correction d'altitude, et SP1/SP2 n'en
+contiennent pas. Elle vient du fichier de champs constants (relief et masque
+terre-mer) de la grille EURAT01, `constant-eurat01.grib2`, publié par
+Météo-France (page Confluence « Modèles et données de prévision », section
+ARPEGE, vérifiée le 2026-11-27) :
+`https://www.data.gouv.fr/api/1/datasets/r/efd2b9d9-5e94-4090-9ea0-eac93f17e33b`.
+
+```bash
+sudo -u nimbostra mkdir -p /data/static/arpege
+sudo -u nimbostra curl -fL -o /data/static/arpege/constant-eurat01.grib2 \
+  'https://www.data.gouv.fr/api/1/datasets/r/efd2b9d9-5e94-4090-9ea0-eac93f17e33b'
+```
+
+Puis dans `.env` : `ARPEGE_CONSTANTS=/data/static/arpege/constant-eurat01.grib2`
+(ou l'option `--constants`). Ce fichier n'est jamais committé ; l'unité
+systemd le lit sans réglage de plus (`ProtectSystem=strict` laisse la lecture
+possible hors du dossier personnel). Une orographie trouvée dans ce fichier
+l'emporte sur toute autre. Sans orographie, la conversion échoue et l'ancien
+Zarr reste en place.
 
 ## Échéances et cumuls
 

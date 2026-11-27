@@ -1,7 +1,7 @@
 # Download the latest complete ARPEGE 0.1° run, then convert it to Zarr.
 # Both steps are no-ops when nothing new is published.
-# Optional: ARPEGE_CONSTANTS=/data/static/arpege/constant-eurat01.grib2 in .env
-# when the packages carry no orography (see docs/ingestion-arpege.md).
+# Needs ARPEGE_CONSTANTS=/data/static/arpege/constant-eurat01.grib2 in .env:
+# the packages carry no orography (see docs/ingestion-arpege.md).
 # Paths and user are defaults: adapt them (see docs/exploitation.md).
 [Unit]
 Description=Nimbostra: ARPEGE ingestion (API Paquets -> Zarr)
