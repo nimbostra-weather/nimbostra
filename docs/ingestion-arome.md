@@ -1,8 +1,8 @@
 # Ingestion AROME 0,01° (API Paquets Météo-France)
 
-Cette page décrit la première étape de la chaîne AROME déterministe :
-le téléchargement des fichiers GRIB2 bruts d'un run. La conversion en Zarr,
-la lecture d'un point et l'API viennent dans les étapes suivantes.
+Cette page décrit les deux premières étapes de la chaîne AROME déterministe :
+le téléchargement des fichiers GRIB2 bruts d'un run, puis leur conversion
+en Zarr. La lecture d'un point et l'API viennent dans les étapes suivantes.
 
 ## Source
 
@@ -68,3 +68,47 @@ l'alerte en cas de run manquant viendront dans l'étape d'exploitation.
 Environ 108 requêtes : 105 fichiers et 3 à 9 appels au catalogue.
 À 90 requêtes par minute, le rythme n'est pas le facteur limitant ;
 le spike a mesuré 2,2 Go en 118 s pour SP1 et SP2.
+
+## Conversion en Zarr
+
+```bash
+cd src
+python -m ingest.arome_convert inventory        # clés GRIB du dernier run, et variable retenue
+python -m ingest.arome_convert convert --keep 2 # conversion du dernier run complet
+```
+
+Sortie : `$DATA_DIR/arome/20261127T06Z.zarr`, publié par renommage atomique,
+puis `$DATA_DIR/arome/latest.json` qui désigne le run à lire.
+
+- Un seul groupe `surface`, dimensions `(member, time, lat, lon)` avec un
+  membre unique (0), pour garder la même forme que les ensembles.
+- `time` en secondes depuis le run ; `lat` et `lon` croissantes ; grille
+  native 0,01° recadrée sur France + ~100 km (40,5–52 N, 6,5 W–10,5 E).
+- Chunks : 1 membre × toutes les échéances × 32 × 32 points, compression zstd.
+- `orog` (lat, lon) : orographie du modèle, lue dans SP3. Les autres
+  paramètres de SP3 sont ignorés.
+
+| Variable | GRIB (eccodes) | Unité stockée | Remarque |
+|----------|----------------|---------------|----------|
+| t2m | 2t | °C | |
+| r2 | 2r | % | |
+| u10, v10 | 10u, 10v | m/s | |
+| gust_u10, gust_v10 | 10efg, 10nfg | m/s | maximum sur le pas, absent à l'échéance 0 |
+| rain, snow, graupel | tirf, tsnowp, tgrp | mm par pas | cumuls depuis le début du run convertis par différence |
+| lcc, mcc, hcc | lcc, mcc, hcc | % | |
+| cape | CAPE_INS ou cape | J/kg | |
+| sp, mslp | sp, prmsl | hPa | mslp seulement s'il est présent |
+| orog | orog, h ou z | m | z divisé par g |
+
+Les unités sont converties d'après la clé GRIB `units`. Une unité inattendue
+arrête la conversion plutôt que de produire une valeur fausse.
+Il faut au minimum t2m, u10, v10 et orog, sinon la conversion échoue et
+l'ancien Zarr reste en place.
+
+**À vérifier sur un vrai run** : les noms courts eccodes ci-dessus viennent
+des tables WMO d'eccodes 2.50, pas encore d'un fichier AROME réel. La commande
+`inventory` affiche, pour chaque paquet, les clés trouvées et la variable
+retenue (`-` si ignorée).
+
+Ordre de grandeur : environ 2 s d'écriture par variable, 0,4 Go par variable
+au plus, et ~6 Go de mémoire pendant la conversion.

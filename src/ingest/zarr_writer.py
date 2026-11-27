@@ -54,24 +54,34 @@ def decode_grib_eccodes(data: bytes) -> DecodedField:
 
     gid = eccodes.codes_new_from_message(data)
     try:
-        grid_type = eccodes.codes_get(gid, "gridType")
-        if grid_type != "regular_ll":
-            raise ValueError(f"unsupported gridType {grid_type!r}")
-        ni = eccodes.codes_get(gid, "Ni")
-        nj = eccodes.codes_get(gid, "Nj")
-        lat1 = eccodes.codes_get_double(gid, "latitudeOfFirstGridPointInDegrees")
-        lat2 = eccodes.codes_get_double(gid, "latitudeOfLastGridPointInDegrees")
-        lon1 = eccodes.codes_get_double(gid, "longitudeOfFirstGridPointInDegrees")
-        lon2 = eccodes.codes_get_double(gid, "longitudeOfLastGridPointInDegrees")
-        i_neg = eccodes.codes_get(gid, "iScansNegatively")
-        j_pos = eccodes.codes_get(gid, "jScansPositively")
-        if eccodes.codes_get(gid, "jPointsAreConsecutive"):
-            raise ValueError("column-major GRIB scanning is not supported")
-        missing = eccodes.codes_get_double(gid, "missingValue")
-        values = eccodes.codes_get_double_array(gid, "values").reshape(nj, ni)
-        has_bitmap = eccodes.codes_get(gid, "bitmapPresent")
+        return field_from_handle(gid)
     finally:
         eccodes.codes_release(gid)
+
+
+def field_from_handle(gid: int) -> DecodedField:
+    """Decode an open eccodes handle (regular_ll) into an ascending-axes field.
+
+    The caller owns ``gid`` and releases it.
+    """
+    import eccodes  # local import: heavy native dependency
+
+    grid_type = eccodes.codes_get(gid, "gridType")
+    if grid_type != "regular_ll":
+        raise ValueError(f"unsupported gridType {grid_type!r}")
+    ni = eccodes.codes_get(gid, "Ni")
+    nj = eccodes.codes_get(gid, "Nj")
+    lat1 = eccodes.codes_get_double(gid, "latitudeOfFirstGridPointInDegrees")
+    lat2 = eccodes.codes_get_double(gid, "latitudeOfLastGridPointInDegrees")
+    lon1 = eccodes.codes_get_double(gid, "longitudeOfFirstGridPointInDegrees")
+    lon2 = eccodes.codes_get_double(gid, "longitudeOfLastGridPointInDegrees")
+    i_neg = eccodes.codes_get(gid, "iScansNegatively")
+    j_pos = eccodes.codes_get(gid, "jScansPositively")
+    if eccodes.codes_get(gid, "jPointsAreConsecutive"):
+        raise ValueError("column-major GRIB scanning is not supported")
+    missing = eccodes.codes_get_double(gid, "missingValue")
+    values = eccodes.codes_get_double_array(gid, "values").reshape(nj, ni)
+    has_bitmap = eccodes.codes_get(gid, "bitmapPresent")
 
     values = values.astype(np.float32)
     if has_bitmap:
