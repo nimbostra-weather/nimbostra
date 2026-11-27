@@ -1,10 +1,10 @@
 """Command line entry point: convert the latest staged API Paquets run into Zarr.
 
 Usage (from ``src``):
-  python -m ingest.arome_convert inventory        # list GRIB keys of the latest staged run
-  python -m ingest.arome_convert convert          # convert it if not done yet
-  python -m ingest.arome_convert convert --keep 2 # then keep the 2 latest stores
-  python -m ingest.arome_convert convert --model arpege
+  python -m ingest.mf_paquets_convert inventory        # list GRIB keys of the latest staged run
+  python -m ingest.mf_paquets_convert convert          # convert it if not done yet
+  python -m ingest.mf_paquets_convert convert --keep 2 # then keep the 2 latest stores
+  python -m ingest.mf_paquets_convert convert --model arpege
 
 Paths: ``$RAW_DIR/<model>`` (staged GRIB) and ``$DATA_DIR/<model>`` (Zarr stores).
 ``--constants`` (or ``<MODEL>_CONSTANTS``, e.g. ``ARPEGE_CONSTANTS``) names an
@@ -20,7 +20,9 @@ import os
 import sys
 from pathlib import Path
 
-from ingest.arome_zarr import (
+from ingest.dotenv import load_dotenv
+from ingest.meteofrance_paquets import RunStage, format_run, staged_runs
+from ingest.mf_paquets_zarr import (
     PROFILES,
     MessageMeta,
     VarSpec,
@@ -31,10 +33,8 @@ from ingest.arome_zarr import (
     read_messages_eccodes,
     write_latest,
 )
-from ingest.dotenv import load_dotenv
-from ingest.meteofrance_paquets import RunStage, format_run, staged_runs
 
-logger = logging.getLogger("ingest.arome_convert")
+logger = logging.getLogger("ingest.mf_paquets_convert")
 
 
 def inventory(raw_root: Path, variables: tuple[VarSpec, ...]) -> int:

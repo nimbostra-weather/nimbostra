@@ -12,12 +12,10 @@ import zarr
 eccodes = pytest.importorskip("eccodes")
 
 from fastapi.testclient import TestClient
-from test_arome_zarr import NI, NJ, gradient, make_message
+from test_mf_paquets_zarr import NI, NJ, gradient, make_message
 from test_point import LATS, LONS, make_store
 
 from api.app import Settings, create_app
-from ingest.arome_convert import main as cli_main
-from ingest.arome_zarr import ARPEGE_VARIABLES, PROFILES, MessageMeta, _match, convert_run
 from ingest.meteofrance_paquets import (
     ARPEGE_01,
     MODELS,
@@ -26,6 +24,8 @@ from ingest.meteofrance_paquets import (
     parse_files,
     parse_time_label,
 )
+from ingest.mf_paquets_convert import main as cli_main
+from ingest.mf_paquets_zarr import ARPEGE_VARIABLES, PROFILES, MessageMeta, _match, convert_run
 from point.reader import derive, read_raw
 
 RUN = datetime(2026, 11, 27, 12, tzinfo=UTC)
@@ -229,7 +229,7 @@ def test_arpege_variable_table():
     assert match("2d", level=2) == "d2m"
 
 
-# ``arome_convert inventory --model arpege`` on the real run of 2026-11-27 12z
+# ``mf_paquets_convert inventory --model arpege`` on the real run of 2026-11-27 12z
 # (SP1 and SP2, file 013H024H): (shortName, typeOfLevel, level, stepType, units).
 REAL_INVENTORY = [
     ("10wdir", "heightAboveGround", 10, "instant", "Degree true", None),
@@ -264,7 +264,7 @@ REAL_INVENTORY = [
 
 @pytest.mark.parametrize(("short", "tol", "level", "step", "units", "expected"), REAL_INVENTORY)
 def test_real_arpege_inventory(short, tol, level, step, units, expected):
-    from ingest.arome_zarr import convert_units
+    from ingest.mf_paquets_zarr import convert_units
 
     spec = _match(MessageMeta(short, tol, level, step, 13, units), ARPEGE_VARIABLES)
     assert (spec.name if spec else None) == expected

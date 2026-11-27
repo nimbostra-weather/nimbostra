@@ -86,7 +86,7 @@ class VarSpec:
 
 # eccodes 2.50 short names; MF local names (e.g. CAPE_INS) accepted as aliases.
 # Time-maximum gusts come out as ``max_10efg`` / ``max_10nfg`` on real AROME files.
-# Run ``python -m ingest.arome_convert inventory`` on a real run to check them.
+# Run ``python -m ingest.mf_paquets_convert inventory`` on a real run to check them.
 AROME_VARIABLES: tuple[VarSpec, ...] = (
     VarSpec("t2m", ("2t",), "degC", "instant", "heightAboveGround", 2, "2 m temperature"),
     VarSpec("r2", ("2r",), "%", "instant", "heightAboveGround", 2, "2 m relative humidity"),
@@ -125,7 +125,7 @@ REQUIRED = frozenset({"t2m", "u10", "v10", "orog"})
 # Packages read only for static fields.
 STATIC_PACKAGES = frozenset({"SP3"})
 
-# ARPEGE 0.1° SP1/SP2, names checked with ``arome_convert inventory --model arpege``
+# ARPEGE 0.1° SP1/SP2, names checked with ``mf_paquets_convert inventory --model arpege``
 # on the real run of 2026-11-27 12z. ``tp`` is the total precipitation (all
 # phases), stored as ``precip_total``; ``tirf`` (rain) and ``tsnowp`` (snow) are
 # its phases. The gust speed ``max_i10fg`` is stored next to its components.

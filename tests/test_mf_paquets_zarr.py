@@ -11,8 +11,9 @@ import zarr
 
 eccodes = pytest.importorskip("eccodes")
 
-from ingest.arome_convert import main as cli_main
-from ingest.arome_zarr import (
+from ingest.meteofrance_paquets import RunStage, format_run, run_tag
+from ingest.mf_paquets_convert import main as cli_main
+from ingest.mf_paquets_zarr import (
     AROME_VARIABLES,
     ARPEGE_VARIABLES,
     MessageMeta,
@@ -27,7 +28,6 @@ from ingest.arome_zarr import (
     read_latest,
     write_latest,
 )
-from ingest.meteofrance_paquets import RunStage, format_run, run_tag
 
 RUN = datetime(2026, 11, 27, 6, tzinfo=UTC)
 NJ, NI = 40, 48  # more than one 32x32 chunk in each direction
@@ -255,7 +255,7 @@ def test_every_stored_unit_accepts_its_eccodes_spelling():
         convert_units(np.float32([1.0]), eccodes[spec.units], spec.units)
 
 
-# ``arome_convert inventory`` on the real run of 2026-11-27 12z (SP1, SP2, SP3):
+# ``mf_paquets_convert inventory`` on the real run of 2026-11-27 12z (SP1, SP2, SP3):
 # (shortName, typeOfLevel, level, stepType, units) -> expected variable.
 REAL_INVENTORY = [
     ("2t", "heightAboveGround", 2, "instant", "K", "t2m"),

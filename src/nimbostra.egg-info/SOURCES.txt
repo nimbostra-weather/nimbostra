@@ -6,10 +6,10 @@ src/api/__init__.py
 src/api/app.py
 src/clusters/__init__.py
 src/ingest/__init__.py
-src/ingest/arome_convert.py
-src/ingest/arome_fetch.py
+src/ingest/mf_paquets_convert.py
+src/ingest/mf_paquets_fetch.py
 src/ingest/arome_pe.py
-src/ingest/arome_zarr.py
+src/ingest/mf_paquets_zarr.py
 src/ingest/dem.py
 src/ingest/dotenv.py
 src/ingest/health.py
@@ -27,7 +27,7 @@ src/point/derived.py
 src/point/reader.py
 tests/test_api.py
 tests/test_arome_pe.py
-tests/test_arome_zarr.py
+tests/test_mf_paquets_zarr.py
 tests/test_dem.py
 tests/test_dotenv.py
 tests/test_health.py
